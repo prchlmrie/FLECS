@@ -1,0 +1,14 @@
+.reports-page {
+  animation: fadeIn 0.5s ease;
+}
+
+.report-controls {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: 20px;
+  align-items: end;
+}
+
+.report-content {
+  animation: fadeIn 0.5s ease;
+}
