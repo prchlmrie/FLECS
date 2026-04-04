@@ -6,8 +6,11 @@ function Restocking() {
   const [recommendations, setRecommendations] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
+  const [poSuccess, setPoSuccess] = useState('');
   const [selectedItems, setSelectedItems] = useState([]);
   const [filterPriority, setFilterPriority] = useState('');
+  const [showPOModal, setShowPOModal] = useState(false);
+  const [poLines, setPoLines] = useState([]);
 
   useEffect(() => {
     loadRecommendations();
@@ -80,6 +83,62 @@ function Restocking() {
       .reduce((sum, r) => sum + r.estimated_cost, 0);
   };
 
+  const getSelectedRows = () =>
+    recommendations.filter((r) => selectedItems.includes(r.product_id));
+
+  const handleGeneratePurchaseOrder = () => {
+    const rows = getSelectedRows();
+    if (rows.length === 0) return;
+    setPoLines(rows);
+    setShowPOModal(true);
+    setPoSuccess('');
+  };
+
+  const downloadPurchaseOrderCsv = () => {
+    if (poLines.length === 0) return;
+    const poNumber = `PO-${new Date().toISOString().slice(0, 10)}-${Date.now().toString(36).toUpperCase()}`;
+    const dateEsc = new Date().toLocaleString().replace(/"/g, '""');
+    const header = [`Purchase Order,${poNumber}`, `"Date","${dateEsc}"`].join('\n');
+    const tableHeader = [
+      'SKU',
+      'Product',
+      'Supplier',
+      'Suggested Qty',
+      'Unit Cost (PHP)',
+      'Line Total (PHP)',
+    ];
+    const body = poLines.map((r) =>
+      [
+        r.sku,
+        `"${String(r.name).replace(/"/g, '""')}"`,
+        `"${String(r.supplier || '').replace(/"/g, '""')}"`,
+        r.suggested_quantity,
+        r.cost_price,
+        r.estimated_cost,
+      ].join(',')
+    );
+    const total = poLines.reduce((s, r) => s + r.estimated_cost, 0);
+    const csv = [header, '', tableHeader.join(','), ...body, '', `TOTAL,,,,,${total}`].join('\n');
+    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8' });
+    const url = window.URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `${poNumber}.csv`;
+    a.click();
+    window.URL.revokeObjectURL(url);
+    setPoSuccess('Purchase order CSV downloaded.');
+    setTimeout(() => setPoSuccess(''), 4000);
+  };
+
+  const printPurchaseOrder = () => {
+    window.print();
+  };
+
+  const closePOModal = () => {
+    setShowPOModal(false);
+    setPoLines([]);
+  };
+
   const exportToCSV = () => {
     const filtered = getFilteredRecommendations();
     const csvContent = [
@@ -115,7 +174,10 @@ function Restocking() {
       <div className="page-header">
         <div>
           <h1>Restocking Recommendations</h1>
-          <p className="page-subtitle">AI-powered demand forecasting and inventory optimization</p>
+          <p className="page-subtitle">
+            Demand-based suggestions (last 30 days of sales + reorder policy). Select lines to build a
+            purchase order.
+          </p>
         </div>
         <div className="flex gap-2">
           <button className="btn btn-secondary" onClick={exportToCSV}>
@@ -132,6 +194,12 @@ function Restocking() {
           </button>
         </div>
       </div>
+
+      {poSuccess && (
+        <div className="alert alert-success">
+          {poSuccess}
+        </div>
+      )}
 
       {recommendations.length === 0 ? (
         <div className="card">
@@ -275,7 +343,11 @@ function Restocking() {
                 <strong>{selectedItems.length} items selected</strong>
                 <span>Total: ₱{calculateSelectedTotal().toLocaleString()}</span>
               </div>
-              <button className="btn btn-primary btn-lg">
+              <button
+                type="button"
+                className="btn btn-primary btn-lg"
+                onClick={handleGeneratePurchaseOrder}
+              >
                 <svg width="20" height="20" viewBox="0 0 20 20" fill="currentColor">
                   <path d="M8 16.5a1.5 1.5 0 11-3 0 1.5 1.5 0 013 0zM15 16.5a1.5 1.5 0 11-3 0 1.5 1.5 0 013 0z" />
                   <path d="M3 4a1 1 0 00-1 1v10a1 1 0 001 1h1.05a2.5 2.5 0 014.9 0H10a1 1 0 001-1V5a1 1 0 00-1-1H3zM14 7a1 1 0 00-1 1v6.05A2.5 2.5 0 0115.95 16H17a1 1 0 001-1v-5a1 1 0 00-.293-.707l-2-2A1 1 0 0015 7h-1z" />
@@ -285,6 +357,75 @@ function Restocking() {
             </div>
           )}
         </>
+      )}
+
+      {showPOModal && poLines.length > 0 && (
+        <div className="modal-overlay" onClick={closePOModal}>
+          <div className="modal po-modal" onClick={(e) => e.stopPropagation()}>
+            <div className="modal-header no-print">
+              <h3 className="modal-title">Purchase order preview</h3>
+              <button type="button" className="modal-close" onClick={closePOModal} aria-label="Close">
+                ×
+              </button>
+            </div>
+
+            <div className="modal-body po-print-area">
+              <div className="po-letterhead">
+                <h2>FLECS — Purchase order</h2>
+                <p className="po-meta">
+                  Generated {new Date().toLocaleString()}
+                  <br />
+                  Lines: {poLines.length}
+                </p>
+              </div>
+
+              <table className="table po-table">
+                <thead>
+                  <tr>
+                    <th>SKU</th>
+                    <th>Product</th>
+                    <th>Supplier</th>
+                    <th>Qty</th>
+                    <th>Unit cost</th>
+                    <th>Line total</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {poLines.map((r) => (
+                    <tr key={r.product_id}>
+                      <td className="monospace">{r.sku}</td>
+                      <td>{r.name}</td>
+                      <td>{r.supplier || '—'}</td>
+                      <td>{r.suggested_quantity}</td>
+                      <td>₱{Number(r.cost_price).toFixed(2)}</td>
+                      <td>₱{Number(r.estimated_cost).toLocaleString()}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+
+              <div className="po-total">
+                <strong>Estimated total:</strong>{' '}
+                <strong>
+                  ₱
+                  {poLines.reduce((s, r) => s + r.estimated_cost, 0).toLocaleString()}
+                </strong>
+              </div>
+            </div>
+
+            <div className="modal-footer no-print">
+              <button type="button" className="btn btn-secondary" onClick={closePOModal}>
+                Close
+              </button>
+              <button type="button" className="btn btn-secondary" onClick={downloadPurchaseOrderCsv}>
+                Download CSV
+              </button>
+              <button type="button" className="btn btn-primary" onClick={printPurchaseOrder}>
+                Print
+              </button>
+            </div>
+          </div>
+        </div>
       )}
     </div>
   );

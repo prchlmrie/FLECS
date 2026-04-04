@@ -1,6 +1,25 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
+import { Link } from 'react-router-dom';
 import api from '../api';
 import './Inventory.css';
+
+const SEARCH_DEBOUNCE_MS = 320;
+
+function buildProductPayload(formData) {
+  const barcodeTrim = (formData.barcode || '').trim();
+  return {
+    name: formData.name.trim(),
+    sku: formData.sku.trim(),
+    barcode: barcodeTrim || null,
+    category_id: Number(formData.category_id),
+    supplier_id: Number(formData.supplier_id),
+    cost_price: parseFloat(formData.cost_price),
+    selling_price: parseFloat(formData.selling_price),
+    stock_level: parseInt(formData.stock_level, 10),
+    reorder_point: parseInt(formData.reorder_point, 10),
+    lead_time_days: parseInt(formData.lead_time_days, 10),
+  };
+}
 
 function Inventory({ user }) {
   const [products, setProducts] = useState([]);
@@ -8,6 +27,7 @@ function Inventory({ user }) {
   const [suppliers, setSuppliers] = useState([]);
   const [loading, setLoading] = useState(true);
   const [searchTerm, setSearchTerm] = useState('');
+  const [debouncedSearch, setDebouncedSearch] = useState('');
   const [selectedCategory, setSelectedCategory] = useState('');
   const [showModal, setShowModal] = useState(false);
   const [editingProduct, setEditingProduct] = useState(null);
@@ -25,16 +45,24 @@ function Inventory({ user }) {
   });
   const [error, setError] = useState('');
   const [success, setSuccess] = useState('');
+  const isFirstLoad = useRef(true);
+
+  useEffect(() => {
+    const t = setTimeout(() => setDebouncedSearch(searchTerm.trim()), SEARCH_DEBOUNCE_MS);
+    return () => clearTimeout(t);
+  }, [searchTerm]);
 
   useEffect(() => {
     loadData();
-  }, [searchTerm, selectedCategory]);
+  }, [debouncedSearch, selectedCategory]);
 
   const loadData = async () => {
     try {
-      setLoading(true);
+      if (isFirstLoad.current) {
+        setLoading(true);
+      }
       const [productsRes, categoriesRes, suppliersRes] = await Promise.all([
-        api.getProducts({ search: searchTerm, category: selectedCategory }),
+        api.getProducts({ search: debouncedSearch, category: selectedCategory }),
         api.getCategories(),
         api.getSuppliers()
       ]);
@@ -46,7 +74,26 @@ function Inventory({ user }) {
       console.error(err);
     } finally {
       setLoading(false);
+      isFirstLoad.current = false;
     }
+  };
+
+  const validateFormClient = () => {
+    if (!formData.name.trim()) return 'Product name is required.';
+    if (!formData.sku.trim()) return 'SKU is required.';
+    if (!formData.category_id) return 'Please select a category.';
+    if (!formData.supplier_id) return 'Please select a supplier.';
+    const cost = parseFloat(formData.cost_price);
+    const sell = parseFloat(formData.selling_price);
+    if (Number.isNaN(cost) || cost < 0) return 'Cost price must be a valid non-negative number.';
+    if (Number.isNaN(sell) || sell < 0) return 'Selling price must be a valid non-negative number.';
+    const stock = parseInt(formData.stock_level, 10);
+    if (Number.isNaN(stock) || stock < 0) return 'Stock level must be zero or greater.';
+    const rp = parseInt(formData.reorder_point, 10);
+    if (Number.isNaN(rp) || rp < 0) return 'Reorder point must be zero or greater.';
+    const lt = parseInt(formData.lead_time_days, 10);
+    if (Number.isNaN(lt) || lt < 1) return 'Lead time must be at least 1 day.';
+    return '';
   };
 
   const handleSubmit = async (e) => {
@@ -54,12 +101,20 @@ function Inventory({ user }) {
     setError('');
     setSuccess('');
 
+    const clientErr = validateFormClient();
+    if (clientErr) {
+      setError(clientErr);
+      return;
+    }
+
+    const payload = buildProductPayload(formData);
+
     try {
       if (editingProduct) {
-        await api.updateProduct(editingProduct.product_id, formData);
+        await api.updateProduct(editingProduct.product_id, payload);
         setSuccess('Product updated successfully!');
       } else {
-        await api.createProduct(formData);
+        await api.createProduct(payload);
         setSuccess('Product created successfully!');
       }
       
@@ -90,13 +145,22 @@ function Inventory({ user }) {
     setShowModal(true);
   };
 
-  const handleDelete = async (productId, productName) => {
-    if (!window.confirm(`Are you sure you want to delete "${productName}"?`)) {
+  const handleDelete = async (product) => {
+    const stock = Number(product.stock_level);
+    const stockNote =
+      stock > 0
+        ? `\n\nThis product currently has ${stock} unit(s) in stock. Deletion may still fail if it appears in past sales.`
+        : '';
+    if (
+      !window.confirm(
+        `Delete "${product.name}" (SKU: ${product.sku})? This cannot be undone.${stockNote}`
+      )
+    ) {
       return;
     }
 
     try {
-      await api.deleteProduct(productId);
+      await api.deleteProduct(product.product_id);
       setSuccess('Product deleted successfully!');
       loadData();
       setTimeout(() => setSuccess(''), 3000);
@@ -129,13 +193,34 @@ function Inventory({ user }) {
   };
 
   const getLowStockBadge = (product) => {
-    if (product.stock_level === 0) {
-      return <span className="badge badge-danger">Out of Stock</span>;
-    } else if (product.stock_level <= product.reorder_point) {
-      return <span className="badge badge-warning">Low Stock</span>;
-    } else {
-      return <span className="badge badge-success">In Stock</span>;
+    const level = Number(product.stock_level);
+    const threshold = Number(product.reorder_point);
+    const tip = `Stock ${level} — low-stock threshold (reorder point) is ${threshold}`;
+    if (level === 0) {
+      return (
+        <span className="badge badge-danger" title={tip}>
+          Out of Stock
+        </span>
+      );
     }
+    if (level <= threshold) {
+      return (
+        <span className="badge badge-warning" title={tip}>
+          Low Stock
+        </span>
+      );
+    }
+    return (
+      <span className="badge badge-success" title={`Stock ${level} — above reorder point (${threshold})`}>
+        In Stock
+      </span>
+    );
+  };
+
+  const isLowStockRow = (product) => {
+    const level = Number(product.stock_level);
+    const threshold = Number(product.reorder_point);
+    return level === 0 || level <= threshold;
   };
 
   if (loading) {
@@ -176,6 +261,12 @@ function Inventory({ user }) {
       )}
 
       <div className="card">
+        {suppliers.length === 0 && (
+          <div className="alert alert-error inventory-banner">
+            No suppliers are defined. Add suppliers under{' '}
+            <Link to="/settings">Settings</Link> before creating products, or reload after the server seeds defaults.
+          </div>
+        )}
         <div className="inventory-filters">
           <div className="search-box">
             <svg width="20" height="20" viewBox="0 0 20 20" fill="currentColor">
@@ -211,9 +302,11 @@ function Inventory({ user }) {
                 <th>Product</th>
                 <th>SKU</th>
                 <th>Category</th>
+                <th>Supplier</th>
                 <th>Cost Price</th>
                 <th>Selling Price</th>
                 <th>Stock</th>
+                <th>Reorder pt.</th>
                 <th>Status</th>
                 <th>Actions</th>
               </tr>
@@ -221,7 +314,7 @@ function Inventory({ user }) {
             <tbody>
               {products.length === 0 ? (
                 <tr>
-                  <td colSpan="8" style={{ textAlign: 'center', padding: '40px' }}>
+                  <td colSpan="10" style={{ textAlign: 'center', padding: '40px' }}>
                     <div style={{ color: '#94a3b8' }}>
                       <svg width="64" height="64" viewBox="0 0 24 24" fill="none" stroke="currentColor" style={{ margin: '0 auto 16px' }}>
                         <path d="M20 7h-9M14 17h6M9 7H5a2 2 0 00-2 2v10a2 2 0 002 2h14a2 2 0 002-2v-5" />
@@ -232,7 +325,10 @@ function Inventory({ user }) {
                 </tr>
               ) : (
                 products.map(product => (
-                  <tr key={product.product_id}>
+                  <tr
+                    key={product.product_id}
+                    className={isLowStockRow(product) ? 'inventory-row-low-stock' : undefined}
+                  >
                     <td>
                       <strong>{product.name}</strong>
                       {product.barcode && (
@@ -242,12 +338,14 @@ function Inventory({ user }) {
                       )}
                     </td>
                     <td className="monospace">{product.sku}</td>
-                    <td>{product.category_name || '-'}</td>
+                    <td>{product.category_name || '—'}</td>
+                    <td>{product.supplier_name || '—'}</td>
                     <td>₱{parseFloat(product.cost_price).toFixed(2)}</td>
                     <td>₱{parseFloat(product.selling_price).toFixed(2)}</td>
                     <td>
                       <strong>{product.stock_level}</strong> units
                     </td>
+                    <td className="monospace">{product.reorder_point}</td>
                     <td>{getLowStockBadge(product)}</td>
                     <td>
                       <div className="action-buttons">
@@ -263,9 +361,8 @@ function Inventory({ user }) {
                         {user.role === 'administrator' && (
                           <button
                             className="btn-icon btn-danger"
-                            onClick={() => handleDelete(product.product_id, product.name)}
-                            title="Delete"
-                            disabled={product.stock_level > 0}
+                            onClick={() => handleDelete(product)}
+                            title="Delete product"
                           >
                             <svg width="18" height="18" viewBox="0 0 20 20" fill="currentColor">
                               <path fillRule="evenodd" d="M9 2a1 1 0 00-.894.553L7.382 4H4a1 1 0 000 2v10a2 2 0 002 2h8a2 2 0 002-2V6a1 1 0 100-2h-3.382l-.724-1.447A1 1 0 0011 2H9zM7 8a1 1 0 012 0v6a1 1 0 11-2 0V8zm5-1a1 1 0 00-1 1v6a1 1 0 102 0V8a1 1 0 00-1-1z" />
@@ -337,14 +434,15 @@ function Inventory({ user }) {
                   </div>
 
                   <div className="form-group">
-                    <label className="form-label">Category</label>
+                    <label className="form-label">Category *</label>
                     <select
                       name="category_id"
                       className="form-select"
                       value={formData.category_id}
                       onChange={handleChange}
+                      required
                     >
-                      <option value="">Select Category</option>
+                      <option value="">Select category</option>
                       {categories.map(cat => (
                         <option key={cat.category_id} value={cat.category_id}>
                           {cat.category_name}
@@ -354,14 +452,15 @@ function Inventory({ user }) {
                   </div>
 
                   <div className="form-group">
-                    <label className="form-label">Supplier</label>
+                    <label className="form-label">Supplier *</label>
                     <select
                       name="supplier_id"
                       className="form-select"
                       value={formData.supplier_id}
                       onChange={handleChange}
+                      required
                     >
-                      <option value="">Select Supplier</option>
+                      <option value="">Select supplier</option>
                       {suppliers.map(sup => (
                         <option key={sup.supplier_id} value={sup.supplier_id}>
                           {sup.supplier_name}
@@ -415,13 +514,14 @@ function Inventory({ user }) {
                   </div>
 
                   <div className="form-group">
-                    <label className="form-label">Reorder Point</label>
+                    <label className="form-label">Reorder point (low-stock threshold) *</label>
                     <input
                       type="number"
                       name="reorder_point"
                       className="form-input"
                       value={formData.reorder_point}
                       onChange={handleChange}
+                      required
                       min="0"
                       placeholder="10"
                     />

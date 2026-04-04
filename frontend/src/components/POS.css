@@ -336,6 +336,67 @@
   margin-top: 20px;
 }
 
+.pos-products .search-box {
+  position: relative;
+  width: 100%;
+}
+
+.pos-products .search-box svg {
+  position: absolute;
+  left: 16px;
+  top: 50%;
+  transform: translateY(-50%);
+  color: var(--text-tertiary);
+}
+
+.pos-products .search-input {
+  width: 100%;
+  padding: 12px 88px 12px 48px;
+  border: 2px solid var(--border-color);
+  border-radius: var(--radius-md);
+  font-family: 'Outfit', sans-serif;
+  font-size: 0.95rem;
+  transition: all var(--transition-base);
+}
+
+.pos-products .search-input:focus {
+  outline: none;
+  border-color: var(--primary);
+  box-shadow: 0 0 0 3px rgba(4, 120, 87, 0.1);
+}
+
+.pos-search-hint {
+  position: absolute;
+  right: 16px;
+  top: 50%;
+  transform: translateY(-50%);
+  font-size: 0.8rem;
+  color: var(--text-tertiary);
+  pointer-events: none;
+}
+
+.product-card-disabled {
+  opacity: 0.65;
+  cursor: not-allowed;
+}
+
+.product-card-disabled:hover {
+  border-color: var(--border-color);
+  box-shadow: none;
+  transform: none;
+}
+
+.product-barcode {
+  font-size: 0.75rem;
+  color: var(--text-tertiary);
+  margin-bottom: 8px;
+}
+
+.product-stock-out {
+  color: #dc2626;
+  font-weight: 600;
+}
+
 @media print {
   body * {
     visibility: hidden;

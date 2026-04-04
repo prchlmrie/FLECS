@@ -1,6 +1,12 @@
 import axios from 'axios';
+import { clearAuthSession } from './authSession';
 
 const API_URL = process.env.REACT_APP_API_URL || 'http://localhost:5000/api';
+
+function isAuthLoginRequest(config) {
+  const url = config?.url || '';
+  return /\/auth\/login\/?(\?|$)/.test(url) || url.endsWith('/auth/login');
+}
 
 // Add token to all requests
 axios.interceptors.request.use(
@@ -16,14 +22,16 @@ axios.interceptors.request.use(
   }
 );
 
-// Handle 401 errors
+// Expired/invalid JWT (401) → clear session and send user to login.
+// Do not treat failed credential checks on POST /auth/login as session expiry (FR-01 vs FR-07).
 axios.interceptors.response.use(
   (response) => response,
   (error) => {
-    if (error.response?.status === 401) {
-      localStorage.removeItem('token');
-      localStorage.removeItem('user');
-      window.location.href = '/login';
+    const status = error.response?.status;
+    const cfg = error.config || {};
+    if (status === 401 && !isAuthLoginRequest(cfg)) {
+      clearAuthSession();
+      window.location.assign(`${window.location.origin}/login`);
     }
     return Promise.reject(error);
   }

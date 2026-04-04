@@ -8,6 +8,7 @@ import Restocking from './components/Restocking';
 import Reports from './components/Reports';
 import Settings from './components/Settings';
 import Layout from './components/Layout';
+import { clearAuthSession, persistSession, readStoredSession } from './authSession';
 import './App.css';
 
 function App() {
@@ -15,25 +16,20 @@ function App() {
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    // Check for stored auth token
-    const token = localStorage.getItem('token');
-    const userData = localStorage.getItem('user');
-    
-    if (token && userData) {
-      setUser(JSON.parse(userData));
+    const { token, user: storedUser } = readStoredSession();
+    if (token && storedUser) {
+      setUser(storedUser);
     }
     setLoading(false);
   }, []);
 
   const handleLogin = (userData, token) => {
-    localStorage.setItem('token', token);
-    localStorage.setItem('user', JSON.stringify(userData));
+    persistSession(userData, token);
     setUser(userData);
   };
 
   const handleLogout = () => {
-    localStorage.removeItem('token');
-    localStorage.removeItem('user');
+    clearAuthSession();
     setUser(null);
   };
 

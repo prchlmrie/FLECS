@@ -94,3 +94,16 @@
   background: none;
   color: var(--text-secondary);
 }
+
+.inventory-banner a {
+  color: var(--primary);
+  font-weight: 600;
+}
+
+.inventory-row-low-stock {
+  background-color: rgba(251, 191, 36, 0.08);
+}
+
+.inventory-row-low-stock:hover {
+  background-color: rgba(251, 191, 36, 0.14);
+}

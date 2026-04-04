@@ -8,10 +8,13 @@ from flask_cors import CORS
 from flask_jwt_extended import JWTManager, create_access_token, jwt_required, get_jwt_identity
 from werkzeug.security import generate_password_hash, check_password_hash
 from datetime import datetime, timedelta
+from dotenv import load_dotenv
 import sqlite3
 import json
 import os
+import math
 from functools import wraps
+from collections import Counter
 import pandas as pd
 import numpy as np
 from io import BytesIO
@@ -19,19 +22,208 @@ from reportlab.lib.pagesizes import letter
 from reportlab.pdfgen import canvas
 import csv
 
+_backend_dir = os.path.dirname(os.path.abspath(__file__))
+load_dotenv(os.path.join(_backend_dir, '.env'))
+
 app = Flask(__name__)
-app.config['JWT_SECRET_KEY'] = 'your-secret-key-change-in-production'
+app.config['JWT_SECRET_KEY'] = os.environ.get(
+    'JWT_SECRET_KEY', 'your-secret-key-change-in-production'
+)
 app.config['JWT_ACCESS_TOKEN_EXPIRES'] = timedelta(hours=8)
 CORS(app)
 jwt = JWTManager(app)
 
-DATABASE = 'flecs.db'
+DATABASE = os.path.join(_backend_dir, 'flecs.db')
 
 # Database Helper Functions
 def get_db():
     db = sqlite3.connect(DATABASE)
     db.row_factory = sqlite3.Row
+    db.execute("PRAGMA foreign_keys = ON")
     return db
+
+
+def ensure_default_suppliers():
+    """Seed suppliers when none exist so new installs can satisfy category+supplier rules."""
+    db = get_db()
+    try:
+        n = db.execute("SELECT COUNT(*) AS c FROM suppliers").fetchone()["c"]
+        if n == 0:
+            for name in ("General Supplier", "Local Distributor"):
+                db.execute("INSERT INTO suppliers (supplier_name) VALUES (?)", (name,))
+            db.commit()
+    finally:
+        db.close()
+
+
+def ensure_sample_products():
+    """
+    Load demo products when the catalog is empty (idempotent).
+    Uses default categories and the first supplier row for foreign keys.
+    """
+    db = get_db()
+    try:
+        if db.execute("SELECT COUNT(*) AS c FROM products").fetchone()["c"] > 0:
+            return
+
+        sup = db.execute(
+            "SELECT supplier_id FROM suppliers ORDER BY supplier_id LIMIT 1"
+        ).fetchone()
+        if not sup:
+            return
+
+        supplier_id = sup["supplier_id"]
+
+        def category_id(category_name):
+            row = db.execute(
+                "SELECT category_id FROM categories WHERE category_name = ?",
+                (category_name,),
+            ).fetchone()
+            return row["category_id"] if row else None
+
+        # name, sku, barcode, category_name, cost, sell, stock, reorder_point, lead_days
+        samples = [
+            ("Coca-Cola 1.5L", "DEMO-BEV-COKE-15", "4801234567890", "Beverages", 45.00, 55.00, 48, 12, 7),
+            ("Sprite 1.5L", "DEMO-BEV-SPRITE-15", "4801234567891", "Beverages", 44.00, 54.00, 8, 12, 7),
+            ("Mineral Water 500ml", "DEMO-BEV-WATER-05", "4801234567892", "Beverages", 8.00, 12.00, 120, 24, 5),
+            ("Lay's Classic 150g", "DEMO-SNACK-LAYS-150", "4801234567893", "Snacks", 35.00, 49.00, 5, 8, 10),
+            ("Instant Noodles Chicken", "DEMO-SNACK-NOODLE-CK", "4801234567894", "Snacks", 12.00, 18.00, 0, 10, 14),
+            ("Corned Beef 150g", "DEMO-CAN-CB-150", "4801234567895", "Canned Goods", 55.00, 72.00, 30, 15, 14),
+            ("Evaporated Milk 370ml", "DEMO-DAIRY-EVAP-370", "4801234567896", "Dairy", 42.00, 56.00, 22, 10, 7),
+            ("Fresh Milk 1L", "DEMO-DAIRY-MILK-1L", "4801234567897", "Dairy", 65.00, 85.00, 15, 12, 5),
+            ("Frozen French Fries 1kg", "DEMO-FRZ-FRIES-1", "4801234567898", "Frozen", 120.00, 165.00, 12, 6, 21),
+            ("Paper Towels 2-Pack", "DEMO-OTH-TOWEL-2", "4801234567899", "Other", 25.00, 39.00, 40, 10, 10),
+            ("Energy Drink 250ml", "DEMO-BEV-ENERGY-25", "4801234567900", "Beverages", 28.00, 38.00, 3, 12, 7),
+        ]
+
+        insert_sql = """
+            INSERT INTO products (
+                name, sku, barcode, category_id, supplier_id,
+                cost_price, selling_price, stock_level, reorder_point, lead_time_days
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """
+
+        for row in samples:
+            name, sku, barcode, cat_name, cost, sell, stock, reorder, lead = row
+            cid = category_id(cat_name)
+            if cid is None:
+                continue
+            db.execute(
+                insert_sql,
+                (name, sku, barcode, cid, supplier_id, cost, sell, stock, reorder, lead),
+            )
+
+        db.commit()
+    finally:
+        db.close()
+
+
+@app.before_request
+def _run_reference_seeds_once():
+    if app.config.get("_reference_seeded"):
+        return
+    ensure_default_suppliers()
+    ensure_sample_products()
+    app.config["_reference_seeded"] = True
+
+
+def parse_product_body(data, existing=None):
+    """
+    Validate and normalize product create/update payload.
+    existing: sqlite Row when updating (for defaults).
+    Raises ValueError with a client-safe message on invalid input.
+    """
+    if not data:
+        raise ValueError("Request body is required")
+
+    def pick(key, default=None):
+        if key in data and data[key] is not None and data[key] != "":
+            return data[key]
+        if existing is not None and key in existing.keys():
+            return existing[key]
+        return default
+
+    name = pick("name")
+    sku = pick("sku")
+    if name is None or not str(name).strip():
+        raise ValueError("Product name is required")
+    if sku is None or not str(sku).strip():
+        raise ValueError("SKU is required")
+    name = str(name).strip()
+    sku = str(sku).strip()
+
+    if "barcode" in data:
+        br = data.get("barcode")
+        barcode = None if br is None or str(br).strip() == "" else str(br).strip()
+    elif existing is not None:
+        barcode = existing["barcode"]
+    else:
+        barcode = None
+
+    cat_raw = pick("category_id")
+    sup_raw = pick("supplier_id")
+    if cat_raw is None or cat_raw == "":
+        raise ValueError("Category is required")
+    if sup_raw is None or sup_raw == "":
+        raise ValueError("Supplier is required")
+    try:
+        category_id = int(cat_raw)
+        supplier_id = int(sup_raw)
+    except (TypeError, ValueError):
+        raise ValueError("Category and supplier must be valid IDs")
+    if category_id <= 0 or supplier_id <= 0:
+        raise ValueError("Category and supplier must be selected")
+
+    cp_raw = pick("cost_price")
+    sp_raw = pick("selling_price")
+    if cp_raw is None or cp_raw == "":
+        raise ValueError("Cost price is required")
+    if sp_raw is None or sp_raw == "":
+        raise ValueError("Selling price is required")
+    try:
+        cost_price = float(cp_raw)
+        selling_price = float(sp_raw)
+    except (TypeError, ValueError):
+        raise ValueError("Prices must be valid numbers")
+    if cost_price < 0 or selling_price < 0:
+        raise ValueError("Prices cannot be negative")
+
+    stock_raw = pick("stock_level", 0 if existing is None else existing["stock_level"])
+    try:
+        stock_level = int(stock_raw)
+    except (TypeError, ValueError):
+        raise ValueError("Stock level must be a whole number")
+    if stock_level < 0:
+        raise ValueError("Stock level cannot be negative")
+
+    rp_raw = pick("reorder_point", 10 if existing is None else existing["reorder_point"])
+    try:
+        reorder_point = int(rp_raw)
+    except (TypeError, ValueError):
+        raise ValueError("Reorder point must be a whole number")
+    if reorder_point < 0:
+        raise ValueError("Reorder point cannot be negative")
+
+    lt_raw = pick("lead_time_days", 7 if existing is None else existing["lead_time_days"])
+    try:
+        lead_time_days = int(lt_raw)
+    except (TypeError, ValueError):
+        raise ValueError("Lead time must be a whole number")
+    if lead_time_days < 1:
+        raise ValueError("Lead time must be at least 1 day")
+
+    return {
+        "name": name,
+        "sku": sku,
+        "barcode": barcode,
+        "category_id": category_id,
+        "supplier_id": supplier_id,
+        "cost_price": cost_price,
+        "selling_price": selling_price,
+        "stock_level": stock_level,
+        "reorder_point": reorder_point,
+        "lead_time_days": lead_time_days,
+    }
 
 def init_db():
     """Initialize the database with required tables"""
@@ -188,10 +380,13 @@ def login():
     
     if not user or not check_password_hash(user['password_hash'], password):
         return jsonify({'error': 'Invalid credentials'}), 401
-    
+
+    ttl = app.config['JWT_ACCESS_TOKEN_EXPIRES']
+    expires_in = int(ttl.total_seconds()) if isinstance(ttl, timedelta) else 28800
     access_token = create_access_token(identity=username)
     return jsonify({
         'token': access_token,
+        'expires_in': expires_in,
         'user': {
             'username': user['username'],
             'role': user['role'],
@@ -205,7 +400,9 @@ def register():
     """Register new user (Admin only)"""
     current_user = get_jwt_identity()
     db = get_db()
-    user = db.execute("SELECT role FROM users WHERE username = ?", (current_user,)).fetchone()
+    user = db.execute(
+        "SELECT user_id, role FROM users WHERE username = ?", (current_user,)
+    ).fetchone()
     
     if user['role'] != 'administrator':
         db.close()
@@ -295,12 +492,12 @@ def create_product():
     """Create new product"""
     data = request.get_json()
     current_user = get_jwt_identity()
-    
-    required_fields = ['name', 'sku', 'cost_price', 'selling_price']
-    for field in required_fields:
-        if field not in data:
-            return jsonify({'error': f'Missing required field: {field}'}), 400
-    
+
+    try:
+        vals = parse_product_body(data, existing=None)
+    except ValueError as e:
+        return jsonify({'error': str(e)}), 400
+
     db = get_db()
     user = db.execute("SELECT user_id FROM users WHERE username = ?", (current_user,)).fetchone()
     
@@ -310,15 +507,15 @@ def create_product():
                                 cost_price, selling_price, stock_level, reorder_point, lead_time_days)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ''', (
-            data['name'], data['sku'], data.get('barcode'),
-            data.get('category_id'), data.get('supplier_id'),
-            data['cost_price'], data['selling_price'],
-            data.get('stock_level', 0), data.get('reorder_point', 10),
-            data.get('lead_time_days', 7)
+            vals['name'], vals['sku'], vals['barcode'],
+            vals['category_id'], vals['supplier_id'],
+            vals['cost_price'], vals['selling_price'],
+            vals['stock_level'], vals['reorder_point'],
+            vals['lead_time_days'],
         ))
         product_id = cursor.lastrowid
         db.commit()
-        log_action(user['user_id'], 'PRODUCT_CREATED', {'product_id': product_id, 'name': data['name']})
+        log_action(user['user_id'], 'PRODUCT_CREATED', {'product_id': product_id, 'name': vals['name']})
         db.close()
         return jsonify({'message': 'Product created successfully', 'product_id': product_id}), 201
     except sqlite3.IntegrityError as e:
@@ -339,6 +536,12 @@ def update_product(product_id):
     if not product:
         db.close()
         return jsonify({'error': 'Product not found'}), 404
+
+    try:
+        vals = parse_product_body(data, existing=product)
+    except ValueError as e:
+        db.close()
+        return jsonify({'error': str(e)}), 400
     
     try:
         db.execute('''
@@ -347,17 +550,17 @@ def update_product(product_id):
                               stock_level = ?, reorder_point = ?, lead_time_days = ?
             WHERE product_id = ?
         ''', (
-            data.get('name', product['name']),
-            data.get('sku', product['sku']),
-            data.get('barcode', product['barcode']),
-            data.get('category_id', product['category_id']),
-            data.get('supplier_id', product['supplier_id']),
-            data.get('cost_price', product['cost_price']),
-            data.get('selling_price', product['selling_price']),
-            data.get('stock_level', product['stock_level']),
-            data.get('reorder_point', product['reorder_point']),
-            data.get('lead_time_days', product['lead_time_days']),
-            product_id
+            vals['name'],
+            vals['sku'],
+            vals['barcode'],
+            vals['category_id'],
+            vals['supplier_id'],
+            vals['cost_price'],
+            vals['selling_price'],
+            vals['stock_level'],
+            vals['reorder_point'],
+            vals['lead_time_days'],
+            product_id,
         ))
         db.commit()
         log_action(user['user_id'], 'PRODUCT_UPDATED', {'product_id': product_id})
@@ -385,89 +588,150 @@ def delete_product(product_id):
     if not product:
         db.close()
         return jsonify({'error': 'Product not found'}), 404
-    
-    if product['stock_level'] > 0:
+
+    try:
+        db.execute("DELETE FROM products WHERE product_id = ?", (product_id,))
+        db.commit()
+    except sqlite3.IntegrityError:
         db.close()
-        return jsonify({'error': 'Cannot delete product with active stock'}), 400
-    
-    db.execute("DELETE FROM products WHERE product_id = ?", (product_id,))
-    db.commit()
+        return jsonify({
+            'error': 'Cannot delete this product; it is still referenced by sales history or other records.'
+        }), 400
+
     log_action(user['user_id'], 'PRODUCT_DELETED', {'product_id': product_id, 'name': product['name']})
     db.close()
-    
+
     return jsonify({'message': 'Product deleted successfully'})
 
 # Transaction Endpoints
 @app.route('/api/transactions', methods=['POST'])
 @jwt_required()
 def create_transaction():
-    """Create new sales transaction"""
+    """Create new sales transaction: line items, stock deduction, validated totals."""
     data = request.get_json()
     current_user = get_jwt_identity()
-    
-    if not data.get('items') or len(data['items']) == 0:
-        return jsonify({'error': 'Transaction must contain at least one item'}), 400
-    
+
+    if not data or not isinstance(data.get('items'), list) or len(data['items']) == 0:
+        return jsonify({'error': 'Transaction must contain at least one line item'}), 400
+
+    normalized_lines = []
+    for idx, raw in enumerate(data['items']):
+        if not isinstance(raw, dict):
+            return jsonify({'error': f'Line {idx + 1}: invalid item payload'}), 400
+        try:
+            pid = int(raw['product_id'])
+            qty = int(raw['quantity'])
+        except (KeyError, TypeError, ValueError):
+            return jsonify({
+                'error': f'Line {idx + 1}: a valid product and whole-number quantity are required',
+            }), 400
+        if pid < 1 or qty < 1:
+            return jsonify({'error': f'Line {idx + 1}: quantity must be at least 1'}), 400
+        normalized_lines.append({'product_id': pid, 'quantity': qty})
+
+    qty_per_product = Counter()
+    for line in normalized_lines:
+        qty_per_product[line['product_id']] += line['quantity']
+
     db = get_db()
-    user = db.execute("SELECT user_id FROM users WHERE username = ?", (current_user,)).fetchone()
-    
     try:
-        # Calculate total and validate stock
-        total_amount = 0
-        items_to_insert = []
-        
-        for item in data['items']:
-            product = db.execute("SELECT * FROM products WHERE product_id = ?", (item['product_id'],)).fetchone()
-            
+        user = db.execute(
+            "SELECT user_id FROM users WHERE username = ?", (current_user,)
+        ).fetchone()
+        if not user:
+            return jsonify({'error': 'User not found'}), 404
+
+        product_cache = {}
+        for pid, needed in qty_per_product.items():
+            product = db.execute(
+                "SELECT * FROM products WHERE product_id = ?", (pid,)
+            ).fetchone()
             if not product:
-                db.close()
-                return jsonify({'error': f'Product {item["product_id"]} not found'}), 404
-            
-            if product['stock_level'] < item['quantity']:
-                db.close()
-                return jsonify({'error': f'Insufficient stock for {product["name"]}'}), 400
-            
-            subtotal = item['quantity'] * product['selling_price']
+                return jsonify({'error': f'Product #{pid} was not found'}), 404
+            available = int(product['stock_level'])
+            if needed > available:
+                return jsonify({
+                    'error': (
+                        f'Insufficient stock for "{product["name"]}": '
+                        f'{needed} requested in this sale, {available} available'
+                    ),
+                }), 400
+            product_cache[pid] = product
+
+        total_amount = 0.0
+        items_to_insert = []
+        for line in normalized_lines:
+            product = product_cache[line['product_id']]
+            qty = line['quantity']
+            unit_price = float(product['selling_price'])
+            subtotal = round(qty * unit_price, 2)
             total_amount += subtotal
             items_to_insert.append({
-                'product_id': item['product_id'],
-                'quantity': item['quantity'],
-                'unit_price': product['selling_price'],
-                'subtotal': subtotal
+                'product_id': line['product_id'],
+                'quantity': qty,
+                'unit_price': unit_price,
+                'subtotal': subtotal,
+                'name': product['name'],
+                'sku': product['sku'],
             })
-        
-        # Create transaction
+
+        total_amount = round(total_amount, 2)
+
         cursor = db.execute(
             "INSERT INTO transactions (total_amount, user_id) VALUES (?, ?)",
-            (total_amount, user['user_id'])
+            (total_amount, user['user_id']),
         )
         transaction_id = cursor.lastrowid
-        
-        # Insert transaction items and update stock
+
         for item in items_to_insert:
-            db.execute('''
+            db.execute(
+                '''
                 INSERT INTO transaction_items (transaction_id, product_id, quantity, unit_price, subtotal)
                 VALUES (?, ?, ?, ?, ?)
-            ''', (transaction_id, item['product_id'], item['quantity'], item['unit_price'], item['subtotal']))
-            
+                ''',
+                (
+                    transaction_id,
+                    item['product_id'],
+                    item['quantity'],
+                    item['unit_price'],
+                    item['subtotal'],
+                ),
+            )
             db.execute(
                 "UPDATE products SET stock_level = stock_level - ? WHERE product_id = ?",
-                (item['quantity'], item['product_id'])
+                (item['quantity'], item['product_id']),
             )
-        
+
         db.commit()
-        log_action(user['user_id'], 'TRANSACTION_CREATED', {'transaction_id': transaction_id, 'total': total_amount})
-        db.close()
-        
+        log_action(
+            user['user_id'],
+            'TRANSACTION_CREATED',
+            {'transaction_id': transaction_id, 'total': total_amount},
+        )
+
+        response_items = [
+            {
+                'product_id': i['product_id'],
+                'name': i['name'],
+                'sku': i['sku'],
+                'quantity': i['quantity'],
+                'unit_price': i['unit_price'],
+                'subtotal': i['subtotal'],
+            }
+            for i in items_to_insert
+        ]
+
         return jsonify({
             'message': 'Transaction completed successfully',
             'transaction_id': transaction_id,
-            'total_amount': total_amount
+            'total_amount': total_amount,
+            'items': response_items,
         }), 201
-    except Exception as e:
+    except Exception:
         db.rollback()
+        return jsonify({'error': 'Could not complete sale. Please try again.'}), 500
+    finally:
         db.close()
-        return jsonify({'error': str(e)}), 500
 
 @app.route('/api/transactions', methods=['GET'])
 @jwt_required()
@@ -630,11 +894,20 @@ def get_restock_recommendations():
         
         total_sold = sales_data['total_sold'] if sales_data['total_sold'] else 0
         avg_daily_sales = total_sold / 30.0
-        
-        # Calculate suggested order quantity
-        # Formula: (Average Daily Sales × Lead Time × Safety Factor) - Current Stock
+
+        # Suggested order qty: cover lead-time demand + safety, but never rely only on
+        # sales history (no sales → avg_daily_sales=0 would otherwise always yield 1).
+        stock = int(product['stock_level'])
+        reorder_pt = int(product['reorder_point'])
+        lead = max(1, int(product['lead_time_days']))
         safety_factor = 1.5
-        suggested_quantity = max(1, int((avg_daily_sales * product['lead_time_days'] * safety_factor) - product['stock_level']))
+
+        demand_through_lead = avg_daily_sales * lead * safety_factor
+        demand_target = int(math.ceil(stock + demand_through_lead))
+        # Policy floor: bring inventory up to at least 2× reorder point when restocking
+        policy_target = max(reorder_pt * 2, reorder_pt + 1)
+        target_stock = max(policy_target, demand_target)
+        suggested_quantity = max(1, target_stock - stock)
         
         # Determine priority
         if product['stock_level'] == 0:
@@ -809,7 +1082,10 @@ if __name__ == '__main__':
     if not os.path.exists(DATABASE):
         init_db()
         print("Database initialized successfully")
-    
+
+    ensure_default_suppliers()
+    ensure_sample_products()
+
     print("FLECS Backend Server Starting...")
     print("Default Admin Credentials:")
     print("Username: admin")

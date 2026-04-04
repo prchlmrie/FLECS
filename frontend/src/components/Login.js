@@ -1,8 +1,6 @@
 import React, { useState } from 'react';
-import axios from 'axios';
+import api from '../api';
 import './Login.css';
-
-const API_URL = process.env.REACT_APP_API_URL || 'http://localhost:5000/api';
 
 function Login({ onLogin }) {
   const [username, setUsername] = useState('');
@@ -16,11 +14,7 @@ function Login({ onLogin }) {
     setLoading(true);
 
     try {
-      const response = await axios.post(`${API_URL}/auth/login`, {
-        username,
-        password
-      });
-
+      const response = await api.login({ username, password });
       const { token, user } = response.data;
       onLogin(user, token);
     } catch (err) {
