@@ -175,8 +175,9 @@ function Restocking() {
         <div>
           <h1>Restocking Recommendations</h1>
           <p className="page-subtitle">
-            Demand-based suggestions (last 30 days of sales + reorder policy). Select lines to build a
-            purchase order.
+            Demand forecast uses <strong>simple exponential smoothing</strong> on daily sales (full
+            calendar series; configurable window via the API). Combined with lead time, safety factor,
+            and reorder policy. Select lines to build a purchase order.
           </p>
         </div>
         <div className="flex gap-2">
@@ -283,7 +284,7 @@ function Restocking() {
                     <th>Product</th>
                     <th>Current Stock</th>
                     <th>Reorder Point</th>
-                    <th>Avg Daily Sales</th>
+                    <th>SES forecast (units/day)</th>
                     <th>Suggested Qty</th>
                     <th>Lead Time</th>
                     <th>Est. Cost</th>
@@ -322,7 +323,9 @@ function Restocking() {
                         </span>
                       </td>
                       <td>{item.reorder_point} units</td>
-                      <td>{item.avg_daily_sales} units/day</td>
+                      <td title={item.naive_avg_daily != null ? `Naive mean/day: ${item.naive_avg_daily}` : ''}>
+                        {Number(item.avg_daily_sales).toFixed(2)} units/day
+                      </td>
                       <td>
                         <strong className="text-primary">{item.suggested_quantity}</strong> units
                       </td>

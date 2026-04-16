@@ -7,7 +7,8 @@ from flask import Flask, request, jsonify, send_file
 from flask_cors import CORS
 from flask_jwt_extended import JWTManager, create_access_token, jwt_required, get_jwt_identity
 from werkzeug.security import generate_password_hash, check_password_hash
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, date, time
+import random
 from dotenv import load_dotenv
 import sqlite3
 import json
@@ -35,6 +36,10 @@ jwt = JWTManager(app)
 
 DATABASE = os.path.join(_backend_dir, 'flecs.db')
 
+# Demand forecast (restocking): simple exponential smoothing on daily sales
+FORECAST_HISTORY_DAYS = int(os.environ.get('FLECS_FORECAST_HISTORY_DAYS', '90'))
+SES_ALPHA = float(os.environ.get('FLECS_SES_ALPHA', '0.35'))
+
 # Database Helper Functions
 def get_db():
     db = sqlite3.connect(DATABASE)
@@ -56,16 +61,31 @@ def ensure_default_suppliers():
         db.close()
 
 
+# name, sku, barcode, category_name, cost, sell, stock, reorder_point, lead_days
+DEMO_PRODUCT_ROWS = [
+    ("Coca-Cola 1.5L", "DEMO-BEV-COKE-15", "4801234567890", "Beverages", 45.00, 55.00, 48, 12, 7),
+    ("Sprite 1.5L", "DEMO-BEV-SPRITE-15", "4801234567891", "Beverages", 44.00, 54.00, 8, 12, 7),
+    ("Mineral Water 500ml", "DEMO-BEV-WATER-05", "4801234567892", "Beverages", 8.00, 12.00, 120, 24, 5),
+    ("Lay's Classic 150g", "DEMO-SNACK-LAYS-150", "4801234567893", "Snacks", 35.00, 49.00, 5, 8, 10),
+    ("Instant Noodles Chicken", "DEMO-SNACK-NOODLE-CK", "4801234567894", "Snacks", 12.00, 18.00, 0, 10, 14),
+    ("Corned Beef 150g", "DEMO-CAN-CB-150", "4801234567895", "Canned Goods", 55.00, 72.00, 30, 15, 14),
+    ("Evaporated Milk 370ml", "DEMO-DAIRY-EVAP-370", "4801234567896", "Dairy", 42.00, 56.00, 22, 10, 7),
+    ("Fresh Milk 1L", "DEMO-DAIRY-MILK-1L", "4801234567897", "Dairy", 65.00, 85.00, 15, 12, 5),
+    ("Frozen French Fries 1kg", "DEMO-FRZ-FRIES-1", "4801234567898", "Frozen", 120.00, 165.00, 12, 6, 21),
+    ("Paper Towels 2-Pack", "DEMO-OTH-TOWEL-2", "4801234567899", "Other", 25.00, 39.00, 40, 10, 10),
+    ("Energy Drink 250ml", "DEMO-BEV-ENERGY-25", "4801234567900", "Beverages", 28.00, 38.00, 3, 12, 7),
+]
+
+DEMO_STOCK_BY_SKU = {row[1]: row[6] for row in DEMO_PRODUCT_ROWS}
+
+
 def ensure_sample_products():
     """
-    Load demo products when the catalog is empty (idempotent).
-    Uses default categories and the first supplier row for foreign keys.
+    Merge demo catalog rows (SKU prefix DEMO-). Uses INSERT OR IGNORE so your own
+    products (e.g. a manual Coca-Cola row) are kept; missing demo SKUs are added.
     """
     db = get_db()
     try:
-        if db.execute("SELECT COUNT(*) AS c FROM products").fetchone()["c"] > 0:
-            return
-
         sup = db.execute(
             "SELECT supplier_id FROM suppliers ORDER BY supplier_id LIMIT 1"
         ).fetchone()
@@ -81,29 +101,14 @@ def ensure_sample_products():
             ).fetchone()
             return row["category_id"] if row else None
 
-        # name, sku, barcode, category_name, cost, sell, stock, reorder_point, lead_days
-        samples = [
-            ("Coca-Cola 1.5L", "DEMO-BEV-COKE-15", "4801234567890", "Beverages", 45.00, 55.00, 48, 12, 7),
-            ("Sprite 1.5L", "DEMO-BEV-SPRITE-15", "4801234567891", "Beverages", 44.00, 54.00, 8, 12, 7),
-            ("Mineral Water 500ml", "DEMO-BEV-WATER-05", "4801234567892", "Beverages", 8.00, 12.00, 120, 24, 5),
-            ("Lay's Classic 150g", "DEMO-SNACK-LAYS-150", "4801234567893", "Snacks", 35.00, 49.00, 5, 8, 10),
-            ("Instant Noodles Chicken", "DEMO-SNACK-NOODLE-CK", "4801234567894", "Snacks", 12.00, 18.00, 0, 10, 14),
-            ("Corned Beef 150g", "DEMO-CAN-CB-150", "4801234567895", "Canned Goods", 55.00, 72.00, 30, 15, 14),
-            ("Evaporated Milk 370ml", "DEMO-DAIRY-EVAP-370", "4801234567896", "Dairy", 42.00, 56.00, 22, 10, 7),
-            ("Fresh Milk 1L", "DEMO-DAIRY-MILK-1L", "4801234567897", "Dairy", 65.00, 85.00, 15, 12, 5),
-            ("Frozen French Fries 1kg", "DEMO-FRZ-FRIES-1", "4801234567898", "Frozen", 120.00, 165.00, 12, 6, 21),
-            ("Paper Towels 2-Pack", "DEMO-OTH-TOWEL-2", "4801234567899", "Other", 25.00, 39.00, 40, 10, 10),
-            ("Energy Drink 250ml", "DEMO-BEV-ENERGY-25", "4801234567900", "Beverages", 28.00, 38.00, 3, 12, 7),
-        ]
-
         insert_sql = """
-            INSERT INTO products (
+            INSERT OR IGNORE INTO products (
                 name, sku, barcode, category_id, supplier_id,
                 cost_price, selling_price, stock_level, reorder_point, lead_time_days
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """
 
-        for row in samples:
+        for row in DEMO_PRODUCT_ROWS:
             name, sku, barcode, cat_name, cost, sell, stock, reorder, lead = row
             cid = category_id(cat_name)
             if cid is None:
@@ -118,12 +123,161 @@ def ensure_sample_products():
         db.close()
 
 
+DEMO_SALES_HISTORY_DAYS = int(os.environ.get('FLECS_DEMO_SALES_DAYS', '95'))
+DEMO_SALES_RANDOM_SEED = int(os.environ.get('FLECS_DEMO_SALES_SEED', '42'))
+# Skip reseeding if you already have this many line items (real data protection)
+DEMO_SALES_MIN_LINES_TO_SKIP = int(os.environ.get('FLECS_DEMO_SALES_MIN_LINES_TO_SKIP', '300'))
+# If you have more than this many completed sales, we will not wipe/rebuild demo history
+DEMO_SALES_MAX_TXNS_TO_REBUILD = int(os.environ.get('FLECS_DEMO_SALES_MAX_TXNS_TO_REBUILD', '12'))
+
+
+def _reset_stocks_for_demo_sales(db):
+    """After clearing transactions, restore DEMO-* stocks and bump others for a fresh simulation."""
+    for sku, stock in DEMO_STOCK_BY_SKU.items():
+        db.execute(
+            "UPDATE products SET stock_level = ? WHERE sku = ?",
+            (stock, sku),
+        )
+    db.execute(
+        """
+        UPDATE products
+        SET stock_level = MAX(stock_level, COALESCE(reorder_point, 10) * 4)
+        WHERE sku NOT LIKE 'DEMO-%'
+        """
+    )
+
+
+def ensure_sample_transactions():
+    """
+    Synthetic POS history for dashboards, reports, and SES visualization.
+    Inserts a full demo timeline when sales data is still thin (few line items),
+    or when FLECS_FORCE_DEMO_RELOAD=1. Wipes existing transactions only in those
+    cases, then resets DEMO SKU stocks and bumps non-demo stock before simulating.
+    """
+    db = get_db()
+    try:
+        force = os.environ.get("FLECS_FORCE_DEMO_RELOAD", "").lower() in (
+            "1",
+            "true",
+            "yes",
+        )
+        line_count = db.execute(
+            "SELECT COUNT(*) AS c FROM transaction_items"
+        ).fetchone()["c"]
+        txn_count = db.execute(
+            "SELECT COUNT(*) AS c FROM transactions WHERE status = 'completed'"
+        ).fetchone()["c"]
+
+        if line_count >= DEMO_SALES_MIN_LINES_TO_SKIP and not force:
+            return
+        if (
+            txn_count > DEMO_SALES_MAX_TXNS_TO_REBUILD
+            and line_count > 0
+            and not force
+        ):
+            return
+
+        if line_count > 0:
+            db.execute("DELETE FROM transaction_items")
+            db.execute("DELETE FROM transactions")
+            _reset_stocks_for_demo_sales(db)
+
+        user = db.execute(
+            "SELECT user_id FROM users WHERE username = 'admin'"
+        ).fetchone()
+        if not user:
+            return
+
+        rows = db.execute(
+            """
+            SELECT product_id, sku, selling_price, cost_price, stock_level
+            FROM products
+            ORDER BY product_id
+            """
+        ).fetchall()
+        if not rows:
+            return
+
+        products = [dict(r) for r in rows]
+        remaining = {int(p["product_id"]): int(p["stock_level"]) for p in products}
+        rng = random.Random(DEMO_SALES_RANDOM_SEED)
+        uid = int(user["user_id"])
+        days = max(30, DEMO_SALES_HISTORY_DAYS)
+
+        for day_back in range(days - 1, -1, -1):
+            sale_date = date.today() - timedelta(days=day_back)
+            base_dt = datetime.combine(sale_date, time(9, 0))
+            # Weekend bump for nicer charts
+            weekend = sale_date.weekday() >= 5
+            num_tx = rng.randint(2, 5) if weekend else rng.randint(1, 4)
+
+            for tix in range(num_tx):
+                candidates = [p for p in products if remaining[int(p["product_id"])] > 0]
+                if not candidates:
+                    break
+                rng.shuffle(candidates)
+                n_lines = rng.randint(1, min(5, len(candidates)))
+                lines = []
+                for p in candidates[:n_lines]:
+                    pid = int(p["product_id"])
+                    cap = min(remaining[pid], rng.randint(1, 5))
+                    if cap <= 0:
+                        continue
+                    q = cap
+                    lines.append((p, q))
+
+                if not lines:
+                    continue
+
+                total_amount = round(
+                    sum(float(p["selling_price"]) * q for p, q in lines), 2
+                )
+                ts = base_dt + timedelta(
+                    minutes=tix * 12 + rng.randint(0, 45),
+                    seconds=rng.randint(0, 59),
+                )
+
+                cur = db.execute(
+                    """
+                    INSERT INTO transactions (total_amount, user_id, status, transaction_date)
+                    VALUES (?, ?, 'completed', ?)
+                    """,
+                    (total_amount, uid, ts.strftime('%Y-%m-%d %H:%M:%S')),
+                )
+                tid = cur.lastrowid
+
+                for p, q in lines:
+                    pid = int(p["product_id"])
+                    unit = float(p["selling_price"])
+                    subtotal = round(q * unit, 2)
+                    db.execute(
+                        """
+                        INSERT INTO transaction_items
+                        (transaction_id, product_id, quantity, unit_price, subtotal)
+                        VALUES (?, ?, ?, ?, ?)
+                        """,
+                        (tid, pid, q, unit, subtotal),
+                    )
+                    remaining[pid] -= q
+
+        for pid, level in remaining.items():
+            db.execute(
+                "UPDATE products SET stock_level = ? WHERE product_id = ?",
+                (max(0, level), pid),
+            )
+
+        db.commit()
+    finally:
+        db.close()
+
+
 @app.before_request
 def _run_reference_seeds_once():
     if app.config.get("_reference_seeded"):
         return
     ensure_default_suppliers()
     ensure_sample_products()
+    ensure_sample_transactions()
     app.config["_reference_seeded"] = True
 
 
@@ -863,13 +1017,54 @@ def get_dashboard_data():
         'sales_trend': [dict(s) for s in sales_trend]
     })
 
+def _build_daily_sales_series(db, product_id, horizon_days):
+    """
+    Full calendar-day series of units sold, oldest → newest, length = horizon_days.
+    Days with no transactions contribute 0.
+    """
+    horizon_days = max(1, int(horizon_days))
+    rows = db.execute(
+        '''
+        SELECT DATE(t.transaction_date) AS day, SUM(ti.quantity) AS qty
+        FROM transaction_items ti
+        INNER JOIN transactions t ON ti.transaction_id = t.transaction_id
+        WHERE ti.product_id = ?
+          AND DATE(t.transaction_date) >= DATE('now', ?)
+          AND t.status = 'completed'
+        GROUP BY day
+        ORDER BY day
+        ''',
+        (product_id, f'-{horizon_days} days'),
+    ).fetchall()
+    day_map = {r['day']: float(r['qty'] or 0) for r in rows}
+    today = date.today()
+    series = []
+    for i in range(horizon_days - 1, -1, -1):
+        d = today - timedelta(days=i)
+        series.append(day_map.get(d.isoformat(), 0.0))
+    return series
+
+
+def simple_exponential_smoothing_level(series, alpha):
+    """
+    Simple exponential smoothing (Brown): S_t = α·x_t + (1-α)·S_{t-1}, S_0 = x_0.
+    The smoothed level S_T is treated as the one-step expected daily demand.
+    """
+    if not series:
+        return 0.0
+    alpha = max(0.01, min(0.99, float(alpha)))
+    level = float(series[0])
+    for x in series[1:]:
+        level = alpha * float(x) + (1.0 - alpha) * level
+    return level
+
+
 @app.route('/api/analytics/restock-recommendations', methods=['GET'])
 @jwt_required()
 def get_restock_recommendations():
-    """Generate restock recommendations using demand forecasting"""
+    """Generate restock recommendations using SES demand forecast + inventory policy."""
     db = get_db()
-    
-    # Get products that need restocking
+
     products = db.execute('''
         SELECT p.*, c.category_name, s.supplier_name
         FROM products p
@@ -878,45 +1073,34 @@ def get_restock_recommendations():
         WHERE p.stock_level <= p.reorder_point
         ORDER BY p.stock_level ASC
     ''').fetchall()
-    
-    recommendations = []
-    
-    for product in products:
-        # Calculate average daily sales (last 30 days)
-        sales_data = db.execute('''
-            SELECT SUM(ti.quantity) as total_sold
-            FROM transaction_items ti
-            JOIN transactions t ON ti.transaction_id = t.transaction_id
-            WHERE ti.product_id = ? 
-            AND DATE(t.transaction_date) >= DATE('now', '-30 days')
-            AND t.status = 'completed'
-        ''', (product['product_id'],)).fetchone()
-        
-        total_sold = sales_data['total_sold'] if sales_data['total_sold'] else 0
-        avg_daily_sales = total_sold / 30.0
 
-        # Suggested order qty: cover lead-time demand + safety, but never rely only on
-        # sales history (no sales → avg_daily_sales=0 would otherwise always yield 1).
+    recommendations = []
+    history_days = FORECAST_HISTORY_DAYS
+    alpha = SES_ALPHA
+
+    for product in products:
+        series = _build_daily_sales_series(db, product['product_id'], history_days)
+        forecast_daily = simple_exponential_smoothing_level(series, alpha)
+        naive_mean = sum(series) / len(series) if series else 0.0
+
         stock = int(product['stock_level'])
         reorder_pt = int(product['reorder_point'])
         lead = max(1, int(product['lead_time_days']))
         safety_factor = 1.5
 
-        demand_through_lead = avg_daily_sales * lead * safety_factor
+        demand_through_lead = forecast_daily * lead * safety_factor
         demand_target = int(math.ceil(stock + demand_through_lead))
-        # Policy floor: bring inventory up to at least 2× reorder point when restocking
         policy_target = max(reorder_pt * 2, reorder_pt + 1)
         target_stock = max(policy_target, demand_target)
         suggested_quantity = max(1, target_stock - stock)
-        
-        # Determine priority
+
         if product['stock_level'] == 0:
             priority = 'CRITICAL'
         elif product['stock_level'] <= product['reorder_point'] * 0.5:
             priority = 'HIGH'
         else:
             priority = 'MEDIUM'
-        
+
         recommendations.append({
             'product_id': product['product_id'],
             'name': product['name'],
@@ -924,21 +1108,31 @@ def get_restock_recommendations():
             'current_stock': product['stock_level'],
             'reorder_point': product['reorder_point'],
             'suggested_quantity': suggested_quantity,
-            'avg_daily_sales': round(avg_daily_sales, 2),
+            'avg_daily_sales': round(forecast_daily, 4),
+            'naive_avg_daily': round(naive_mean, 4),
             'lead_time_days': product['lead_time_days'],
             'cost_price': product['cost_price'],
             'estimated_cost': round(suggested_quantity * product['cost_price'], 2),
             'priority': priority,
             'category': product['category_name'],
-            'supplier': product['supplier_name']
+            'supplier': product['supplier_name'],
         })
-    
+
     db.close()
-    
+
     return jsonify({
         'recommendations': recommendations,
         'total_items': len(recommendations),
-        'total_estimated_cost': sum(r['estimated_cost'] for r in recommendations)
+        'total_estimated_cost': sum(r['estimated_cost'] for r in recommendations),
+        'forecast_model': {
+            'method': 'simple_exponential_smoothing',
+            'alpha': alpha,
+            'history_days': history_days,
+            'description': (
+                'Daily demand = SES level over a full calendar-day series '
+                '(missing days = 0); restock uses forecast × lead_time × safety vs policy target.'
+            ),
+        },
     })
 
 # Categories
@@ -1085,6 +1279,7 @@ if __name__ == '__main__':
 
     ensure_default_suppliers()
     ensure_sample_products()
+    ensure_sample_transactions()
 
     print("FLECS Backend Server Starting...")
     print("Default Admin Credentials:")
