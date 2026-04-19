@@ -1,0 +1,144 @@
+.login-container {
+  min-height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+  position: relative;
+  overflow: hidden;
+}
+
+.login-background {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: linear-gradient(135deg, #065f46 0%, #047857 50%, #059669 100%);
+  z-index: 0;
+}
+
+.login-pattern {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background-image: 
+    repeating-linear-gradient(45deg, transparent, transparent 35px, rgba(255,255,255,.03) 35px, rgba(255,255,255,.03) 70px);
+  opacity: 0.5;
+}
+
+.login-card {
+  background: white;
+  border-radius: 24px;
+  box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.25);
+  padding: 48px;
+  max-width: 480px;
+  width: 100%;
+  position: relative;
+  z-index: 1;
+  animation: slideIn 0.5s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+@keyframes slideIn {
+  from {
+    opacity: 0;
+    transform: translateY(30px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.login-header {
+  text-align: center;
+  margin-bottom: 40px;
+}
+
+.logo {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 16px;
+  margin-bottom: 12px;
+}
+
+.logo-icon {
+  width: 48px;
+  height: 48px;
+  background: linear-gradient(135deg, #047857 0%, #059669 100%);
+  border-radius: 12px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: white;
+  box-shadow: 0 4px 12px rgba(4, 120, 87, 0.3);
+}
+
+.logo-icon svg {
+  width: 28px;
+  height: 28px;
+}
+
+.logo h1 {
+  font-size: 2.5rem;
+  font-weight: 800;
+  color: #0f172a;
+  margin: 0;
+  letter-spacing: -1px;
+}
+
+.login-subtitle {
+  color: #64748b;
+  font-size: 0.95rem;
+  font-weight: 500;
+}
+
+.login-form {
+  margin-bottom: 32px;
+}
+
+.login-footer {
+  padding-top: 24px;
+  border-top: 2px solid #f1f5f9;
+}
+
+.demo-credentials {
+  text-align: center;
+  font-size: 0.85rem;
+  color: #64748b;
+}
+
+.demo-credentials p {
+  margin: 4px 0;
+}
+
+.demo-credentials .monospace {
+  background: #f1f5f9;
+  padding: 8px 12px;
+  border-radius: 6px;
+  margin-top: 8px;
+  display: inline-block;
+  font-size: 0.8rem;
+}
+
+.spinner {
+  width: 16px;
+  height: 16px;
+  border: 2px solid rgba(255, 255, 255, 0.3);
+  border-top-color: white;
+  border-radius: 50%;
+  animation: spin 0.6s linear infinite;
+}
+
+@media (max-width: 640px) {
+  .login-card {
+    padding: 32px 24px;
+  }
+  
+  .logo h1 {
+    font-size: 2rem;
+  }
+}
