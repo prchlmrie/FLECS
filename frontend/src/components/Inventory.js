@@ -1,6 +1,8 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { Link } from 'react-router-dom';
 import api from '../api';
+import HelpTooltip from './HelpTooltip';
+import { markProductAdded } from '../onboardingStorage';
 import './Inventory.css';
 
 const SEARCH_DEBOUNCE_MS = 320;
@@ -45,6 +47,10 @@ function Inventory({ user }) {
   });
   const [error, setError] = useState('');
   const [success, setSuccess] = useState('');
+  const [showArchived, setShowArchived] = useState(false);
+  const [archiveTarget, setArchiveTarget] = useState(null);
+  const [archiveSubmitting, setArchiveSubmitting] = useState(false);
+  const [restoreSubmittingId, setRestoreSubmittingId] = useState(null);
   const isFirstLoad = useRef(true);
 
   useEffect(() => {
@@ -54,7 +60,7 @@ function Inventory({ user }) {
 
   useEffect(() => {
     loadData();
-  }, [debouncedSearch, selectedCategory]);
+  }, [debouncedSearch, selectedCategory, showArchived]);
 
   const loadData = async () => {
     try {
@@ -62,7 +68,11 @@ function Inventory({ user }) {
         setLoading(true);
       }
       const [productsRes, categoriesRes, suppliersRes] = await Promise.all([
-        api.getProducts({ search: debouncedSearch, category: selectedCategory }),
+        api.getProducts({
+          search: debouncedSearch,
+          category: selectedCategory,
+          ...(showArchived ? { archived: 1 } : {}),
+        }),
         api.getCategories(),
         api.getSuppliers()
       ]);
@@ -115,6 +125,7 @@ function Inventory({ user }) {
         setSuccess('Product updated successfully!');
       } else {
         await api.createProduct(payload);
+        markProductAdded();
         setSuccess('Product created successfully!');
       }
       
@@ -145,27 +156,35 @@ function Inventory({ user }) {
     setShowModal(true);
   };
 
-  const handleDelete = async (product) => {
-    const stock = Number(product.stock_level);
-    const stockNote =
-      stock > 0
-        ? `\n\nThis product currently has ${stock} unit(s) in stock. Deletion may still fail if it appears in past sales.`
-        : '';
-    if (
-      !window.confirm(
-        `Delete "${product.name}" (SKU: ${product.sku})? This cannot be undone.${stockNote}`
-      )
-    ) {
-      return;
-    }
-
+  const handleConfirmArchive = async () => {
+    if (!archiveTarget) return;
+    setArchiveSubmitting(true);
+    setError('');
     try {
-      await api.deleteProduct(product.product_id);
-      setSuccess('Product deleted successfully!');
+      await api.deleteProduct(archiveTarget.product_id);
+      setArchiveTarget(null);
+      setSuccess('Item removed from the shelf. You can bring it back anytime from Archived products.');
+      loadData();
+      setTimeout(() => setSuccess(''), 4000);
+    } catch (err) {
+      setError(err.response?.data?.error || 'Could not update this item');
+    } finally {
+      setArchiveSubmitting(false);
+    }
+  };
+
+  const handleRestoreProduct = async (product) => {
+    setRestoreSubmittingId(product.product_id);
+    setError('');
+    try {
+      await api.restoreProduct(product.product_id);
+      setSuccess(`"${product.name}" is back on the shelf.`);
       loadData();
       setTimeout(() => setSuccess(''), 3000);
     } catch (err) {
-      setError(err.response?.data?.error || 'Delete failed');
+      setError(err.response?.data?.error || 'Restore failed');
+    } finally {
+      setRestoreSubmittingId(null);
     }
   };
 
@@ -192,27 +211,55 @@ function Inventory({ user }) {
     });
   };
 
-  const getLowStockBadge = (product) => {
+  const getStockStatus = (product) => {
     const level = Number(product.stock_level);
     const threshold = Number(product.reorder_point);
-    const tip = `Stock ${level} — low-stock threshold (reorder point) is ${threshold}`;
+    const highLine =
+      threshold > 0 && level >= threshold * 5
+        ? 'You have a lot more on hand than your usual reorder level — that is fine if you expect strong sales.'
+        : null;
+
     if (level === 0) {
-      return (
-        <span className="badge badge-danger" title={tip}>
-          Out of Stock
-        </span>
-      );
+      return {
+        kind: 'out',
+        label: 'None left',
+        title: 'You have sold out. Restock when you can.',
+      };
     }
     if (level <= threshold) {
-      return (
-        <span className="badge badge-warning" title={tip}>
-          Low Stock
-        </span>
-      );
+      return {
+        kind: 'low',
+        label: 'Running low',
+        title: `You have ${level} left. We nudge you when you reach ${threshold} (your reorder point).`,
+      };
     }
+    if (highLine) {
+      return {
+        kind: 'high',
+        label: 'Plenty on hand',
+        title: highLine,
+      };
+    }
+    return {
+      kind: 'ok',
+      label: 'Looks fine',
+      title: `About ${level} on hand — above your alert level of ${threshold}.`,
+    };
+  };
+
+  const renderStockStatus = (product) => {
+    const s = getStockStatus(product);
+    const pillClass =
+      s.kind === 'out'
+        ? 'stock-pill stock-pill-out'
+        : s.kind === 'low'
+          ? 'stock-pill stock-pill-low'
+          : s.kind === 'high'
+            ? 'stock-pill stock-pill-high'
+            : 'stock-pill stock-pill-ok';
     return (
-      <span className="badge badge-success" title={`Stock ${level} — above reorder point (${threshold})`}>
-        In Stock
+      <span className={pillClass} title={s.title}>
+        {s.label}
       </span>
     );
   };
@@ -234,12 +281,14 @@ function Inventory({ user }) {
           <h1>Inventory Management</h1>
           <p className="page-subtitle">Manage your products, stock levels, and suppliers</p>
         </div>
-        <button className="btn btn-primary" onClick={() => setShowModal(true)}>
-          <svg width="20" height="20" viewBox="0 0 20 20" fill="currentColor">
-            <path fillRule="evenodd" d="M10 3a1 1 0 011 1v5h5a1 1 0 110 2h-5v5a1 1 0 11-2 0v-5H4a1 1 0 110-2h5V4a1 1 0 011-1z" />
-          </svg>
-          Add Product
-        </button>
+        {!showArchived && (
+          <button className="btn btn-primary" type="button" onClick={() => setShowModal(true)}>
+            <svg width="20" height="20" viewBox="0 0 20 20" fill="currentColor">
+              <path fillRule="evenodd" d="M10 3a1 1 0 011 1v5h5a1 1 0 110 2h-5v5a1 1 0 11-2 0v-5H4a1 1 0 110-2h5V4a1 1 0 011-1z" />
+            </svg>
+            Add Product
+          </button>
+        )}
       </div>
 
       {success && (
@@ -261,7 +310,28 @@ function Inventory({ user }) {
       )}
 
       <div className="card">
-        {suppliers.length === 0 && (
+        <div className="inventory-shelf-tabs" role="tablist" aria-label="Product shelf">
+          <button
+            type="button"
+            role="tab"
+            aria-selected={!showArchived}
+            className={`inventory-shelf-tab ${!showArchived ? 'is-active' : ''}`}
+            onClick={() => setShowArchived(false)}
+          >
+            On the shelf
+          </button>
+          <button
+            type="button"
+            role="tab"
+            aria-selected={showArchived}
+            className={`inventory-shelf-tab ${showArchived ? 'is-active' : ''}`}
+            onClick={() => setShowArchived(true)}
+          >
+            Archived products
+          </button>
+        </div>
+
+        {suppliers.length === 0 && !showArchived && (
           <div className="alert alert-error inventory-banner">
             No suppliers are defined. Add suppliers under{' '}
             <Link to="/settings">Settings</Link> before creating products, or reload after the server seeds defaults.
@@ -300,26 +370,62 @@ function Inventory({ user }) {
             <thead>
               <tr>
                 <th>Product</th>
-                <th>SKU</th>
+                <th className="th-with-help">
+                  <span className="label-with-help">
+                    SKU
+                    <HelpTooltip text="Your own internal code for this item." />
+                  </span>
+                </th>
                 <th>Category</th>
                 <th>Supplier</th>
                 <th>Cost Price</th>
                 <th>Selling Price</th>
                 <th>Stock</th>
-                <th>Reorder pt.</th>
-                <th>Status</th>
+                <th className="th-with-help">
+                  <span className="label-with-help">
+                    Reorder point
+                    <HelpTooltip text="We will alert you when stock falls to this number." />
+                  </span>
+                </th>
+                <th>Quick read</th>
                 <th>Actions</th>
               </tr>
             </thead>
             <tbody>
               {products.length === 0 ? (
                 <tr>
-                  <td colSpan="10" style={{ textAlign: 'center', padding: '40px' }}>
-                    <div style={{ color: '#94a3b8' }}>
-                      <svg width="64" height="64" viewBox="0 0 24 24" fill="none" stroke="currentColor" style={{ margin: '0 auto 16px' }}>
-                        <path d="M20 7h-9M14 17h6M9 7H5a2 2 0 00-2 2v10a2 2 0 002 2h14a2 2 0 002-2v-5" />
-                      </svg>
-                      <p>No products found. Add your first product to get started!</p>
+                  <td colSpan="10">
+                    <div className="inventory-empty">
+                      {showArchived ? (
+                        <>
+                          <h3 className="inventory-empty-title">Nothing archived yet</h3>
+                          <p className="inventory-empty-text">
+                            When you remove an item from the shelf, it appears here. Past sales stay intact — you can
+                            always put an item back on the shelf.
+                          </p>
+                        </>
+                      ) : (
+                        <>
+                          <h3 className="inventory-empty-title">You have not added any products yet</h3>
+                          <p className="inventory-empty-text">
+                            Click the big green button below to add your first product. If you have not set up
+                            categories or suppliers yet, visit Settings first — the checklist on your Dashboard can walk
+                            you through it.
+                          </p>
+                          <button
+                            type="button"
+                            className="btn btn-primary inventory-empty-cta"
+                            onClick={() => setShowModal(true)}
+                          >
+                            Add your first product
+                          </button>
+                          <p className="inventory-empty-links">
+                            <Link to="/settings">Open Settings</Link>
+                            {' · '}
+                            <Link to="/dashboard">Back to Dashboard</Link>
+                          </p>
+                        </>
+                      )}
                     </div>
                   </td>
                 </tr>
@@ -327,7 +433,14 @@ function Inventory({ user }) {
                 products.map(product => (
                   <tr
                     key={product.product_id}
-                    className={isLowStockRow(product) ? 'inventory-row-low-stock' : undefined}
+                    className={
+                      [
+                        !showArchived && isLowStockRow(product) ? 'inventory-row-low-stock' : '',
+                        showArchived ? 'inventory-row-archived' : '',
+                      ]
+                        .filter(Boolean)
+                        .join(' ') || undefined
+                    }
                   >
                     <td>
                       <strong>{product.name}</strong>
@@ -346,28 +459,44 @@ function Inventory({ user }) {
                       <strong>{product.stock_level}</strong> units
                     </td>
                     <td className="monospace">{product.reorder_point}</td>
-                    <td>{getLowStockBadge(product)}</td>
+                    <td>{renderStockStatus(product)}</td>
                     <td>
-                      <div className="action-buttons">
-                        <button
-                          className="btn-icon"
-                          onClick={() => handleEdit(product)}
-                          title="Edit"
-                        >
-                          <svg width="18" height="18" viewBox="0 0 20 20" fill="currentColor">
-                            <path d="M13.586 3.586a2 2 0 112.828 2.828l-.793.793-2.828-2.828.793-.793zM11.379 5.793L3 14.172V17h2.828l8.38-8.379-2.83-2.828z" />
-                          </svg>
-                        </button>
-                        {user.role === 'administrator' && (
-                          <button
-                            className="btn-icon btn-danger"
-                            onClick={() => handleDelete(product)}
-                            title="Delete product"
-                          >
-                            <svg width="18" height="18" viewBox="0 0 20 20" fill="currentColor">
-                              <path fillRule="evenodd" d="M9 2a1 1 0 00-.894.553L7.382 4H4a1 1 0 000 2v10a2 2 0 002 2h8a2 2 0 002-2V6a1 1 0 100-2h-3.382l-.724-1.447A1 1 0 0011 2H9zM7 8a1 1 0 012 0v6a1 1 0 11-2 0V8zm5-1a1 1 0 00-1 1v6a1 1 0 102 0V8a1 1 0 00-1-1z" />
-                            </svg>
-                          </button>
+                      <div className="inventory-actions">
+                        {showArchived ? (
+                          user.role === 'administrator' ? (
+                            <button
+                              type="button"
+                              className="btn btn-secondary btn-sm"
+                              disabled={restoreSubmittingId === product.product_id}
+                              onClick={() => handleRestoreProduct(product)}
+                            >
+                              {restoreSubmittingId === product.product_id ? 'Restoring…' : 'Put back on shelf'}
+                            </button>
+                          ) : (
+                            <span className="inventory-muted">Admin can restore</span>
+                          )
+                        ) : (
+                          <>
+                            <button
+                              type="button"
+                              className="btn-icon"
+                              onClick={() => handleEdit(product)}
+                              title="Edit"
+                            >
+                              <svg width="18" height="18" viewBox="0 0 20 20" fill="currentColor">
+                                <path d="M13.586 3.586a2 2 0 112.828 2.828l-.793.793-2.828-2.828.793-.793zM11.379 5.793L3 14.172V17h2.828l8.38-8.379-2.83-2.828z" />
+                              </svg>
+                            </button>
+                            {user.role === 'administrator' && (
+                              <button
+                                type="button"
+                                className="btn btn-outline-danger btn-sm inventory-remove-shelf"
+                                onClick={() => setArchiveTarget(product)}
+                              >
+                                Remove from shelf
+                              </button>
+                            )}
+                          </>
                         )}
                       </div>
                     </td>
@@ -409,7 +538,10 @@ function Inventory({ user }) {
                   </div>
 
                   <div className="form-group">
-                    <label className="form-label">SKU *</label>
+                    <label className="form-label label-with-help">
+                      SKU *
+                      <HelpTooltip text="Your own internal code for this item." />
+                    </label>
                     <input
                       type="text"
                       name="sku"
@@ -514,7 +646,10 @@ function Inventory({ user }) {
                   </div>
 
                   <div className="form-group">
-                    <label className="form-label">Reorder point (low-stock threshold) *</label>
+                    <label className="form-label label-with-help">
+                      Reorder point *
+                      <HelpTooltip text="We will alert you when stock falls to this number." />
+                    </label>
                     <input
                       type="number"
                       name="reorder_point"
@@ -528,7 +663,10 @@ function Inventory({ user }) {
                   </div>
 
                   <div className="form-group">
-                    <label className="form-label">Lead Time (days)</label>
+                    <label className="form-label label-with-help">
+                      Lead time (days)
+                      <HelpTooltip text="How many days it usually takes for your supplier to deliver this." />
+                    </label>
                     <input
                       type="number"
                       name="lead_time_days"
@@ -555,6 +693,68 @@ function Inventory({ user }) {
                 </button>
               </div>
             </form>
+          </div>
+        </div>
+      )}
+
+      {archiveTarget && (
+        <div
+          className="modal-overlay"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="archive-modal-title"
+          onClick={() => !archiveSubmitting && setArchiveTarget(null)}
+        >
+          <div className="modal modal-confirm-wide" onClick={(e) => e.stopPropagation()}>
+            <div className="modal-header">
+              <h3 id="archive-modal-title" className="modal-title">
+                Wait — remove this from the shelf?
+              </h3>
+              <button
+                type="button"
+                className="modal-close"
+                disabled={archiveSubmitting}
+                onClick={() => setArchiveTarget(null)}
+                aria-label="Close"
+              >
+                ×
+              </button>
+            </div>
+            <div className="modal-body">
+              <p className="archive-modal-lead">
+                You are about to stop selling <strong>{archiveTarget.name}</strong>
+                {archiveTarget.sku ? (
+                  <>
+                    {' '}
+                    (<span className="monospace">{archiveTarget.sku}</span>)
+                  </>
+                ) : null}
+                . It disappears from the till and inventory lists, but{' '}
+                <strong>nothing is permanently deleted</strong>.
+              </p>
+              <p className="archive-modal-lead">
+                You can always find it again under <strong>Archived products</strong> and put it back on the shelf when
+                you are ready.
+              </p>
+            </div>
+            <div className="modal-footer">
+              <button
+                type="button"
+                className="btn btn-secondary"
+                disabled={archiveSubmitting}
+                onClick={() => setArchiveTarget(null)}
+              >
+                Keep selling this item
+              </button>
+              <button
+                type="button"
+                className="btn btn-danger"
+                disabled={archiveSubmitting}
+                onClick={handleConfirmArchive}
+              >
+                {archiveSubmitting ? 'Working…' : 'Yes, remove from shelf'}
+              </button>
+            </div>
           </div>
         </div>
       )}

@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { LineChart, Line, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer } from 'recharts';
 import api from '../api';
+import DashboardOnboarding from './DashboardOnboarding';
 import './Dashboard.css';
 
 function Dashboard() {
@@ -41,6 +42,8 @@ function Dashboard() {
         <p className="page-subtitle">Welcome back! Here's your store overview</p>
       </div>
 
+      <DashboardOnboarding />
+
       <div className="grid grid-4">
         <div className="stat-card">
           <div className="stat-label">Total Products</div>
@@ -48,8 +51,9 @@ function Dashboard() {
         </div>
         
         <div className="stat-card warning">
-          <div className="stat-label">Low Stock Items</div>
+          <div className="stat-label">Needs restocking</div>
           <div className="stat-value">{summary.low_stock_count}</div>
+          <div className="stat-hint">At or below your reorder point</div>
         </div>
         
         <div className="stat-card success">

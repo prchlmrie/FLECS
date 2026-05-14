@@ -48,6 +48,20 @@ def get_db():
     return db
 
 
+def ensure_products_archive_column():
+    """Add is_archived for soft-delete (existing DBs created before this column)."""
+    db = get_db()
+    try:
+        cols = [r[1] for r in db.execute("PRAGMA table_info(products)").fetchall()]
+        if "is_archived" not in cols:
+            db.execute(
+                "ALTER TABLE products ADD COLUMN is_archived INTEGER NOT NULL DEFAULT 0"
+            )
+            db.commit()
+    finally:
+        db.close()
+
+
 def ensure_default_suppliers():
     """Seed suppliers when none exist so new installs can satisfy category+supplier rules."""
     db = get_db()
@@ -275,6 +289,7 @@ def ensure_sample_transactions():
 def _run_reference_seeds_once():
     if app.config.get("_reference_seeded"):
         return
+    ensure_products_archive_column()
     ensure_default_suppliers()
     ensure_sample_products()
     ensure_sample_transactions()
@@ -429,6 +444,7 @@ def init_db():
             stock_level INTEGER DEFAULT 0,
             reorder_point INTEGER DEFAULT 10,
             lead_time_days INTEGER DEFAULT 7,
+            is_archived INTEGER NOT NULL DEFAULT 0,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             FOREIGN KEY (category_id) REFERENCES categories(category_id),
             FOREIGN KEY (supplier_id) REFERENCES suppliers(supplier_id)
@@ -489,6 +505,9 @@ def init_db():
     
     db.commit()
     db.close()
+
+    ensure_products_archive_column()
+
 
 def log_action(user_id, action, details=None):
     """Log user actions for audit trail"""
@@ -591,10 +610,12 @@ def register():
 @app.route('/api/products', methods=['GET'])
 @jwt_required()
 def get_products():
-    """Get all products"""
+    """Get products. By default only active (not archived); pass archived=1 for archived only."""
     search = request.args.get('search', '')
     category = request.args.get('category', '')
-    
+    archived_raw = (request.args.get('archived') or '').lower()
+    archived_only = archived_raw in ('1', 'true', 'yes')
+
     db = get_db()
     query = '''
         SELECT p.*, c.category_name, s.supplier_name
@@ -604,6 +625,11 @@ def get_products():
         WHERE 1=1
     '''
     params = []
+
+    if archived_only:
+        query += " AND COALESCE(p.is_archived, 0) = 1"
+    else:
+        query += " AND COALESCE(p.is_archived, 0) = 0"
     
     if search:
         query += " AND (p.name LIKE ? OR p.sku LIKE ? OR p.barcode LIKE ?)"
@@ -727,7 +753,7 @@ def update_product(product_id):
 @app.route('/api/products/<int:product_id>', methods=['DELETE'])
 @jwt_required()
 def delete_product(product_id):
-    """Delete product (Admin only)"""
+    """Soft-delete (archive) product — Admin only. Item can be restored from Archived."""
     current_user = get_jwt_identity()
     
     db = get_db()
@@ -743,19 +769,41 @@ def delete_product(product_id):
         db.close()
         return jsonify({'error': 'Product not found'}), 404
 
-    try:
-        db.execute("DELETE FROM products WHERE product_id = ?", (product_id,))
-        db.commit()
-    except sqlite3.IntegrityError:
-        db.close()
-        return jsonify({
-            'error': 'Cannot delete this product; it is still referenced by sales history or other records.'
-        }), 400
-
-    log_action(user['user_id'], 'PRODUCT_DELETED', {'product_id': product_id, 'name': product['name']})
+    db.execute(
+        "UPDATE products SET is_archived = 1 WHERE product_id = ?",
+        (product_id,),
+    )
+    db.commit()
+    log_action(user['user_id'], 'PRODUCT_ARCHIVED', {'product_id': product_id, 'name': product['name']})
     db.close()
 
-    return jsonify({'message': 'Product deleted successfully'})
+    return jsonify({'message': 'Product removed from shelf (archived).'})
+
+
+@app.route('/api/products/<int:product_id>/restore', methods=['POST'])
+@jwt_required()
+def restore_product(product_id):
+    """Restore an archived product to the active shelf (Admin only)."""
+    current_user = get_jwt_identity()
+    db = get_db()
+    user = db.execute("SELECT user_id, role FROM users WHERE username = ?", (current_user,)).fetchone()
+    if user['role'] != 'administrator':
+        db.close()
+        return jsonify({'error': 'Insufficient permissions'}), 403
+
+    product = db.execute("SELECT * FROM products WHERE product_id = ?", (product_id,)).fetchone()
+    if not product:
+        db.close()
+        return jsonify({'error': 'Product not found'}), 404
+
+    db.execute(
+        "UPDATE products SET is_archived = 0 WHERE product_id = ?",
+        (product_id,),
+    )
+    db.commit()
+    log_action(user['user_id'], 'PRODUCT_RESTORED', {'product_id': product_id, 'name': product['name']})
+    db.close()
+    return jsonify({'message': 'Product restored to the shelf.'})
 
 # Transaction Endpoints
 @app.route('/api/transactions', methods=['POST'])
@@ -798,9 +846,24 @@ def create_transaction():
         product_cache = {}
         for pid, needed in qty_per_product.items():
             product = db.execute(
-                "SELECT * FROM products WHERE product_id = ?", (pid,)
+                """
+                SELECT * FROM products
+                WHERE product_id = ? AND COALESCE(is_archived, 0) = 0
+                """,
+                (pid,),
             ).fetchone()
             if not product:
+                exists = db.execute(
+                    "SELECT COALESCE(is_archived, 0) AS a FROM products WHERE product_id = ?",
+                    (pid,),
+                ).fetchone()
+                if exists and int(exists["a"]) == 1:
+                    return jsonify({
+                        'error': (
+                            f'Product #{pid} is removed from the shelf (archived). '
+                            'Restore it under Inventory → Archived products before selling.'
+                        ),
+                    }), 400
                 return jsonify({'error': f'Product #{pid} was not found'}), 404
             available = int(product['stock_level'])
             if needed > available:
@@ -955,12 +1018,15 @@ def get_dashboard_data():
     """Get dashboard analytics"""
     db = get_db()
     
-    # Total products
-    total_products = db.execute("SELECT COUNT(*) as count FROM products").fetchone()['count']
+    # Total products (active shelf items only)
+    total_products = db.execute(
+        "SELECT COUNT(*) as count FROM products WHERE COALESCE(is_archived, 0) = 0"
+    ).fetchone()['count']
     
     # Low stock items
     low_stock = db.execute('''
-        SELECT COUNT(*) as count FROM products WHERE stock_level <= reorder_point
+        SELECT COUNT(*) as count FROM products
+        WHERE COALESCE(is_archived, 0) = 0 AND stock_level <= reorder_point
     ''').fetchone()['count']
     
     # Today's sales
@@ -980,6 +1046,7 @@ def get_dashboard_data():
     # Stock valuation (at cost)
     stock_value = db.execute('''
         SELECT COALESCE(SUM(stock_level * cost_price), 0) as value FROM products
+        WHERE COALESCE(is_archived, 0) = 0
     ''').fetchone()['value']
     
     # Top selling products (last 30 days)
@@ -1070,7 +1137,7 @@ def get_restock_recommendations():
         FROM products p
         LEFT JOIN categories c ON p.category_id = c.category_id
         LEFT JOIN suppliers s ON p.supplier_id = s.supplier_id
-        WHERE p.stock_level <= p.reorder_point
+        WHERE COALESCE(p.is_archived, 0) = 0 AND p.stock_level <= p.reorder_point
         ORDER BY p.stock_level ASC
     ''').fetchall()
 
@@ -1259,6 +1326,7 @@ def generate_inventory_report():
         FROM products p
         LEFT JOIN categories c ON p.category_id = c.category_id
         LEFT JOIN suppliers s ON p.supplier_id = s.supplier_id
+        WHERE COALESCE(p.is_archived, 0) = 0
         ORDER BY p.name
     ''').fetchall()
     
@@ -1277,6 +1345,7 @@ if __name__ == '__main__':
         init_db()
         print("Database initialized successfully")
 
+    ensure_products_archive_column()
     ensure_default_suppliers()
     ensure_sample_products()
     ensure_sample_transactions()

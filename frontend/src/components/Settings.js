@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import api from '../api';
+import { markCategoryAdded, markSupplierAdded } from '../onboardingStorage';
 import './Settings.css';
 
 function Settings({ user }) {
@@ -45,6 +46,7 @@ function Settings({ user }) {
 
     try {
       await api.createCategory({ category_name: newCategory });
+      markCategoryAdded();
       setSuccess('Category added successfully!');
       setNewCategory('');
       loadData();
@@ -60,6 +62,7 @@ function Settings({ user }) {
 
     try {
       await api.createSupplier(newSupplier);
+      markSupplierAdded();
       setSuccess('Supplier added successfully!');
       setNewSupplier({
         supplier_name: '',
@@ -277,14 +280,20 @@ function Settings({ user }) {
               </div>
               <div className="card-body">
                 <div className="category-list">
-                  {categories.map((cat) => (
-                    <div key={cat.category_id} className="category-item">
-                      <svg width="20" height="20" viewBox="0 0 20 20" fill="currentColor">
-                        <path d="M2 6a2 2 0 012-2h5l2 2h5a2 2 0 012 2v6a2 2 0 01-2 2H4a2 2 0 01-2-2V6z" />
-                      </svg>
-                      {cat.category_name}
+                  {categories.length === 0 ? (
+                    <div className="settings-empty-hint">
+                      <p>No categories yet. Add one on the left — try &quot;Beverages&quot; or &quot;Snacks&quot; to get started.</p>
                     </div>
-                  ))}
+                  ) : (
+                    categories.map((cat) => (
+                      <div key={cat.category_id} className="category-item">
+                        <svg width="20" height="20" viewBox="0 0 20 20" fill="currentColor">
+                          <path d="M2 6a2 2 0 012-2h5l2 2h5a2 2 0 012 2v6a2 2 0 01-2 2H4a2 2 0 01-2-2V6z" />
+                        </svg>
+                        {cat.category_name}
+                      </div>
+                    ))
+                  )}
                 </div>
               </div>
             </div>
@@ -363,19 +372,25 @@ function Settings({ user }) {
               </div>
               <div className="card-body">
                 <div className="supplier-list">
-                  {suppliers.map((sup) => (
-                    <div key={sup.supplier_id} className="supplier-item">
-                      <div className="supplier-header">
-                        <svg width="20" height="20" viewBox="0 0 20 20" fill="currentColor">
-                          <path fillRule="evenodd" d="M4 4a2 2 0 00-2 2v8a2 2 0 002 2h12a2 2 0 002-2V8a2 2 0 00-2-2h-5L9 4H4z" />
-                        </svg>
-                        <strong>{sup.supplier_name}</strong>
-                      </div>
-                      {sup.contact_person && <p>Contact: {sup.contact_person}</p>}
-                      {sup.phone && <p>Phone: {sup.phone}</p>}
-                      {sup.email && <p>Email: {sup.email}</p>}
+                  {suppliers.length === 0 ? (
+                    <div className="settings-empty-hint">
+                      <p>No suppliers yet. Add your first partner on the left — for example &quot;Local Bakery&quot;.</p>
                     </div>
-                  ))}
+                  ) : (
+                    suppliers.map((sup) => (
+                      <div key={sup.supplier_id} className="supplier-item">
+                        <div className="supplier-header">
+                          <svg width="20" height="20" viewBox="0 0 20 20" fill="currentColor">
+                            <path fillRule="evenodd" d="M4 4a2 2 0 00-2 2v8a2 2 0 002 2h12a2 2 0 002-2V8a2 2 0 00-2-2h-5L9 4H4z" />
+                          </svg>
+                          <strong>{sup.supplier_name}</strong>
+                        </div>
+                        {sup.contact_person && <p>Contact: {sup.contact_person}</p>}
+                        {sup.phone && <p>Phone: {sup.phone}</p>}
+                        {sup.email && <p>Email: {sup.email}</p>}
+                      </div>
+                    ))
+                  )}
                 </div>
               </div>
             </div>

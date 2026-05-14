@@ -1,5 +1,6 @@
 .restocking-page {
   animation: fadeIn 0.5s ease;
+  padding-bottom: 120px;
 }
 
 .restock-filters {

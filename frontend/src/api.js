@@ -48,6 +48,7 @@ const api = {
   createProduct: (data) => axios.post(`${API_URL}/products`, data),
   updateProduct: (id, data) => axios.put(`${API_URL}/products/${id}`, data),
   deleteProduct: (id) => axios.delete(`${API_URL}/products/${id}`),
+  restoreProduct: (id) => axios.post(`${API_URL}/products/${id}/restore`),
 
   // Categories
   getCategories: () => axios.get(`${API_URL}/categories`),

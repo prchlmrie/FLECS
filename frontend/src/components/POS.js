@@ -1,5 +1,7 @@
 import React, { useState, useEffect, useMemo, useRef } from 'react';
+import { Link } from 'react-router-dom';
 import api from '../api';
+import { markFirstSale } from '../onboardingStorage';
 import './POS.css';
 
 const SEARCH_DEBOUNCE_MS = 320;
@@ -152,6 +154,7 @@ function POS() {
       setSuccess('Transaction completed successfully.');
       setShowReceipt(true);
       setCart([]);
+      markFirstSale();
       loadProducts();
       setTimeout(() => setSuccess(''), 5000);
     } catch (err) {
@@ -230,7 +233,17 @@ function POS() {
                   <circle cx="11" cy="11" r="8" />
                   <path d="M21 21l-4.35-4.35" />
                 </svg>
-                <p>No products match your search</p>
+                {debouncedSearch ? (
+                  <p>No products match your search</p>
+                ) : (
+                  <>
+                    <h3>Nothing to sell yet</h3>
+                    <p>Add products under Inventory — they appear here for the cashier.</p>
+                    <Link to="/inventory" className="btn btn-primary pos-empty-cta">
+                      Open Inventory
+                    </Link>
+                  </>
+                )}
               </div>
             ) : (
               products.map((product) => {

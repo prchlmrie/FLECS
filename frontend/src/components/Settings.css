@@ -128,3 +128,15 @@
   color: var(--text-secondary);
   padding-left: 32px;
 }
+
+.settings-empty-hint {
+  padding: 20px 16px;
+  text-align: center;
+  color: var(--text-secondary);
+  line-height: 1.55;
+  font-size: 0.95rem;
+}
+
+.settings-empty-hint p {
+  margin: 0;
+}
