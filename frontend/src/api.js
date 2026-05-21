@@ -1,29 +1,32 @@
 import axios from 'axios';
+import { clearAuthSession } from './authSession';
 
 const API_URL = process.env.REACT_APP_API_URL || 'http://localhost:5000/api';
 
-// Add token to all requests
+function isAuthLoginRequest(config) {
+  const url = config?.url || '';
+  return /\/auth\/login\/?(\\?|$)/.test(url) || url.endsWith('/auth/login');
+}
+
+// Attach JWT to every request
 axios.interceptors.request.use(
   (config) => {
     const token = localStorage.getItem('token');
-    if (token) {
-      config.headers.Authorization = `Bearer ${token}`;
-    }
+    if (token) config.headers.Authorization = `Bearer ${token}`;
     return config;
   },
-  (error) => {
-    return Promise.reject(error);
-  }
+  (error) => Promise.reject(error)
 );
 
-// Handle 401 errors
+// Expired/invalid JWT → clear session and redirect to login
 axios.interceptors.response.use(
   (response) => response,
   (error) => {
-    if (error.response?.status === 401) {
-      localStorage.removeItem('token');
-      localStorage.removeItem('user');
-      window.location.href = '/login';
+    const status = error.response?.status;
+    const cfg = error.config || {};
+    if (status === 401 && !isAuthLoginRequest(cfg)) {
+      clearAuthSession();
+      window.location.assign(`${window.location.origin}/login`);
     }
     return Promise.reject(error);
   }
@@ -40,6 +43,7 @@ const api = {
   createProduct: (data) => axios.post(`${API_URL}/products`, data),
   updateProduct: (id, data) => axios.put(`${API_URL}/products/${id}`, data),
   deleteProduct: (id) => axios.delete(`${API_URL}/products/${id}`),
+  restoreProduct: (id) => axios.post(`${API_URL}/products/${id}/restore`),
 
   // Categories
   getCategories: () => axios.get(`${API_URL}/categories`),
@@ -54,13 +58,41 @@ const api = {
   getTransactions: (params) => axios.get(`${API_URL}/transactions`, { params }),
   getTransaction: (id) => axios.get(`${API_URL}/transactions/${id}`),
 
-  // Analytics
+  // Analytics (admin + owner)
   getDashboard: () => axios.get(`${API_URL}/analytics/dashboard`),
   getRestockRecommendations: () => axios.get(`${API_URL}/analytics/restock-recommendations`),
 
-  // Reports
+  // Reports (admin only)
   getSalesReport: (params) => axios.get(`${API_URL}/reports/sales`, { params }),
   getInventoryReport: () => axios.get(`${API_URL}/reports/inventory`),
+
+  // Stock Requests (owner/admin creates, supplier acts)
+  createStockRequest: (data) => axios.post(`${API_URL}/stock-requests`, data),
+  getStockRequests: (params) => axios.get(`${API_URL}/stock-requests`, { params }),
+
+  // Notifications
+  getNotifications: () => axios.get(`${API_URL}/notifications`),
+  markNotificationsRead: () => axios.put(`${API_URL}/notifications/read`),
+  // Messages
+  getMessageContacts: () => axios.get(`${API_URL}/messages/contacts`),
+  getMessages: (userId) => axios.get(`${API_URL}/messages/${userId}`),
+  sendMessage: (data) => axios.post(`${API_URL}/messages`, data),
+  getUnreadMessageCount: () => axios.get(`${API_URL}/messages/unread-count`),
+  // Supplier Portal
+  getSupplierDashboard: () => axios.get(`${API_URL}/supplier/dashboard`),
+  getSupplierLowStock: () => axios.get(`${API_URL}/supplier/low-stock`),
+  getSupplierStockRequests: (params) => axios.get(`${API_URL}/supplier/stock-requests`, { params }),
+  updateSupplierStockRequest: (id, data) => axios.put(`${API_URL}/supplier/stock-requests/${id}`, data),
 };
 
 export default api;
+
+// Notifications
+export const getNotifications = () => axios.get(`${API_URL}/notifications`);
+export const markNotificationsRead = () => axios.put(`${API_URL}/notifications/read`);
+
+// Messages
+export const getMessageContacts = () => axios.get(`${API_URL}/messages/contacts`);
+export const getMessages = (userId) => axios.get(`${API_URL}/messages/${userId}`);
+export const sendMessage = (data) => axios.post(`${API_URL}/messages`, data);
+export const getUnreadMessageCount = () => axios.get(`${API_URL}/messages/unread-count`);

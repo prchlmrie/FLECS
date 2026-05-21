@@ -283,6 +283,14 @@ h6 { font-size: 1rem; }
   margin: 8px 0;
 }
 
+.stat-hint {
+  font-size: 0.8rem;
+  color: var(--text-tertiary);
+  margin-top: 4px;
+  line-height: 1.35;
+  font-weight: 500;
+}
+
 .stat-label {
   font-size: 0.9rem;
   color: var(--text-secondary);

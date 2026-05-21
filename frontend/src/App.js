@@ -7,33 +7,34 @@ import POS from './components/POS';
 import Restocking from './components/Restocking';
 import Reports from './components/Reports';
 import Settings from './components/Settings';
+import SupplierDashboard from './components/SupplierDashboard';
 import Layout from './components/Layout';
+import { clearAuthSession, persistSession, readStoredSession } from './authSession';
 import './App.css';
+
+/** Return the default landing path for a given role */
+function defaultPathForRole(role) {
+  if (role === 'supplier') return '/supplier-dashboard';
+  return '/dashboard';
+}
 
 function App() {
   const [user, setUser] = useState(null);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    // Check for stored auth token
-    const token = localStorage.getItem('token');
-    const userData = localStorage.getItem('user');
-    
-    if (token && userData) {
-      setUser(JSON.parse(userData));
-    }
+    const { token, user: storedUser } = readStoredSession();
+    if (token && storedUser) setUser(storedUser);
     setLoading(false);
   }, []);
 
   const handleLogin = (userData, token) => {
-    localStorage.setItem('token', token);
-    localStorage.setItem('user', JSON.stringify(userData));
+    persistSession(userData, token);
     setUser(userData);
   };
 
   const handleLogout = () => {
-    localStorage.removeItem('token');
-    localStorage.removeItem('user');
+    clearAuthSession();
     setUser(null);
   };
 
@@ -49,26 +50,61 @@ function App() {
   return (
     <Router>
       <Routes>
-        <Route 
-          path="/login" 
+        {/* Login page */}
+        <Route
+          path="/login"
           element={
-            user ? <Navigate to="/dashboard" /> : <Login onLogin={handleLogin} />
-          } 
+            user
+              ? <Navigate to={defaultPathForRole(user.role)} />
+              : <Login onLogin={handleLogin} />
+          }
         />
-        
+
+        {/* All authenticated routes */}
         <Route
           path="/*"
           element={
             user ? (
               <Layout user={user} onLogout={handleLogout}>
                 <Routes>
-                  <Route path="/dashboard" element={<Dashboard />} />
-                  <Route path="/inventory" element={<Inventory user={user} />} />
-                  <Route path="/pos" element={<POS />} />
-                  <Route path="/restocking" element={<Restocking />} />
-                  <Route path="/reports" element={<Reports user={user} />} />
-                  <Route path="/settings" element={<Settings user={user} />} />
-                  <Route path="/" element={<Navigate to="/dashboard" />} />
+                  {/* ── Supplier-only routes ── */}
+                  {user.role === 'supplier' && (
+                    <>
+                      <Route path="/supplier-dashboard" element={<SupplierDashboard user={user} />} />
+                      <Route path="/" element={<Navigate to="/supplier-dashboard" />} />
+                      {/* Catch-all for supplier: redirect to their dashboard */}
+                      <Route path="*" element={<Navigate to="/supplier-dashboard" />} />
+                    </>
+                  )}
+
+                  {/* ── Admin + Owner routes ── */}
+                  {(user.role === 'administrator' || user.role === 'owner') && (
+                    <>
+                      <Route path="/dashboard" element={<Dashboard />} />
+                      <Route path="/inventory" element={<Inventory user={user} />} />
+                      <Route path="/pos" element={<POS />} />
+                      <Route path="/restocking" element={<Restocking />} />
+                      <Route path="/" element={<Navigate to="/dashboard" />} />
+
+                      {/* Admin-only routes */}
+                      {user.role === 'administrator' && (
+                        <>
+                          <Route path="/reports" element={<Reports user={user} />} />
+                          <Route path="/settings" element={<Settings user={user} />} />
+                        </>
+                      )}
+
+                      {/* Redirect non-admin trying to access admin pages */}
+                      {user.role === 'owner' && (
+                        <>
+                          <Route path="/reports" element={<Navigate to="/dashboard" />} />
+                          <Route path="/settings" element={<Navigate to="/dashboard" />} />
+                        </>
+                      )}
+
+                      <Route path="*" element={<Navigate to="/dashboard" />} />
+                    </>
+                  )}
                 </Routes>
               </Layout>
             ) : (

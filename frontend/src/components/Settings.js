@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import api from '../api';
+import { markCategoryAdded, markSupplierAdded } from '../onboardingStorage';
 import './Settings.css';
 
 function Settings({ user }) {
@@ -17,7 +18,8 @@ function Settings({ user }) {
   const [newUser, setNewUser] = useState({
     username: '',
     password: '',
-    role: 'clerk'
+    role: 'owner',
+    supplier_id: ''
   });
   const [success, setSuccess] = useState('');
   const [error, setError] = useState('');
@@ -42,9 +44,9 @@ function Settings({ user }) {
   const handleAddCategory = async (e) => {
     e.preventDefault();
     if (!newCategory.trim()) return;
-
     try {
       await api.createCategory({ category_name: newCategory });
+      markCategoryAdded();
       setSuccess('Category added successfully!');
       setNewCategory('');
       loadData();
@@ -57,17 +59,11 @@ function Settings({ user }) {
 
   const handleAddSupplier = async (e) => {
     e.preventDefault();
-
     try {
       await api.createSupplier(newSupplier);
+      markSupplierAdded();
       setSuccess('Supplier added successfully!');
-      setNewSupplier({
-        supplier_name: '',
-        contact_person: '',
-        phone: '',
-        email: '',
-        address: ''
-      });
+      setNewSupplier({ supplier_name: '', contact_person: '', phone: '', email: '', address: '' });
       loadData();
       setTimeout(() => setSuccess(''), 3000);
     } catch (err) {
@@ -79,14 +75,24 @@ function Settings({ user }) {
   const handleAddUser = async (e) => {
     e.preventDefault();
 
+    // Validate supplier_id required for supplier role
+    if (newUser.role === 'supplier' && !newUser.supplier_id) {
+      setError('Please select a supplier to link this account to.');
+      setTimeout(() => setError(''), 4000);
+      return;
+    }
+
+    const payload = {
+      username: newUser.username,
+      password: newUser.password,
+      role: newUser.role,
+      ...(newUser.role === 'supplier' ? { supplier_id: parseInt(newUser.supplier_id) } : {})
+    };
+
     try {
-      await api.register(newUser);
+      await api.register(payload);
       setSuccess('User created successfully!');
-      setNewUser({
-        username: '',
-        password: '',
-        role: 'clerk'
-      });
+      setNewUser({ username: '', password: '', role: 'owner', supplier_id: '' });
       setTimeout(() => setSuccess(''), 3000);
     } catch (err) {
       setError(err.response?.data?.error || 'Failed to create user');
@@ -98,9 +104,7 @@ function Settings({ user }) {
     return (
       <div className="page-header">
         <h1>Settings</h1>
-        <div className="alert alert-error">
-          Access denied. Administrator privileges required.
-        </div>
+        <div className="alert alert-error">Access denied. Administrator privileges required.</div>
       </div>
     );
   }
@@ -133,28 +137,19 @@ function Settings({ user }) {
       )}
 
       <div className="settings-tabs">
-        <button
-          className={`tab ${activeTab === 'users' ? 'active' : ''}`}
-          onClick={() => setActiveTab('users')}
-        >
+        <button className={`tab ${activeTab === 'users' ? 'active' : ''}`} onClick={() => setActiveTab('users')}>
           <svg width="20" height="20" viewBox="0 0 20 20" fill="currentColor">
             <path d="M9 6a3 3 0 11-6 0 3 3 0 016 0zM17 6a3 3 0 11-6 0 3 3 0 016 0zM12.93 17c.046-.327.07-.66.07-1a6.97 6.97 0 00-1.5-4.33A5 5 0 0119 16v1h-6.07zM6 11a5 5 0 015 5v1H1v-1a5 5 0 015-5z" />
           </svg>
           User Management
         </button>
-        <button
-          className={`tab ${activeTab === 'categories' ? 'active' : ''}`}
-          onClick={() => setActiveTab('categories')}
-        >
+        <button className={`tab ${activeTab === 'categories' ? 'active' : ''}`} onClick={() => setActiveTab('categories')}>
           <svg width="20" height="20" viewBox="0 0 20 20" fill="currentColor">
             <path d="M2 6a2 2 0 012-2h5l2 2h5a2 2 0 012 2v6a2 2 0 01-2 2H4a2 2 0 01-2-2V6z" />
           </svg>
           Categories
         </button>
-        <button
-          className={`tab ${activeTab === 'suppliers' ? 'active' : ''}`}
-          onClick={() => setActiveTab('suppliers')}
-        >
+        <button className={`tab ${activeTab === 'suppliers' ? 'active' : ''}`} onClick={() => setActiveTab('suppliers')}>
           <svg width="20" height="20" viewBox="0 0 20 20" fill="currentColor">
             <path fillRule="evenodd" d="M4 4a2 2 0 00-2 2v8a2 2 0 002 2h12a2 2 0 002-2V8a2 2 0 00-2-2h-5L9 4H4zm7 5a1 1 0 10-2 0v1H8a1 1 0 100 2h1v1a1 1 0 102 0v-1h1a1 1 0 100-2h-1V9z" />
           </svg>
@@ -163,6 +158,7 @@ function Settings({ user }) {
       </div>
 
       <div className="tab-content">
+        {/* ── USER MANAGEMENT ── */}
         {activeTab === 'users' && (
           <div className="grid grid-2">
             <div className="card">
@@ -199,12 +195,36 @@ function Settings({ user }) {
                     <select
                       className="form-select"
                       value={newUser.role}
-                      onChange={(e) => setNewUser({ ...newUser, role: e.target.value })}
+                      onChange={(e) => setNewUser({ ...newUser, role: e.target.value, supplier_id: '' })}
                     >
-                      <option value="clerk">Clerk</option>
+                      <option value="owner">Store Owner</option>
                       <option value="administrator">Administrator</option>
+                      <option value="supplier">Supplier</option>
                     </select>
                   </div>
+
+                  {/* Only show when role = supplier */}
+                  {newUser.role === 'supplier' && (
+                    <div className="form-group">
+                      <label className="form-label">Link to Supplier *</label>
+                      <select
+                        className="form-select"
+                        value={newUser.supplier_id}
+                        onChange={(e) => setNewUser({ ...newUser, supplier_id: e.target.value })}
+                        required
+                      >
+                        <option value="">— Select a supplier —</option>
+                        {suppliers.map(s => (
+                          <option key={s.supplier_id} value={s.supplier_id}>
+                            {s.supplier_name}
+                          </option>
+                        ))}
+                      </select>
+                      <small style={{ color: '#6b7280', fontSize: 12, marginTop: 4, display: 'block' }}>
+                        The supplier account will only see products linked to this supplier.
+                      </small>
+                    </div>
+                  )}
 
                   <button type="submit" className="btn btn-primary w-full">
                     Create User
@@ -220,6 +240,7 @@ function Settings({ user }) {
               <div className="card-body">
                 <div className="info-section">
                   <h4>Role Descriptions</h4>
+
                   <div className="role-info">
                     <strong>Administrator:</strong>
                     <ul>
@@ -230,13 +251,24 @@ function Settings({ user }) {
                       <li>System settings</li>
                     </ul>
                   </div>
+
                   <div className="role-info">
-                    <strong>Clerk:</strong>
+                    <strong>Store Owner:</strong>
                     <ul>
                       <li>View inventory</li>
-                      <li>Process sales</li>
+                      <li>Process sales (POS)</li>
                       <li>Add/edit products</li>
-                      <li>Basic operations</li>
+                      <li>View restocking recommendations</li>
+                      <li>Send stock requests to suppliers</li>
+                    </ul>
+                  </div>
+
+                  <div className="role-info">
+                    <strong>Supplier:</strong>
+                    <ul>
+                      <li>View their own low-stock alerts</li>
+                      <li>Acknowledge and fulfill restock requests</li>
+                      <li>No access to POS or financial data</li>
                     </ul>
                   </div>
                 </div>
@@ -245,6 +277,7 @@ function Settings({ user }) {
           </div>
         )}
 
+        {/* ── CATEGORIES ── */}
         {activeTab === 'categories' && (
           <div className="grid grid-2">
             <div className="card">
@@ -277,20 +310,27 @@ function Settings({ user }) {
               </div>
               <div className="card-body">
                 <div className="category-list">
-                  {categories.map((cat) => (
-                    <div key={cat.category_id} className="category-item">
-                      <svg width="20" height="20" viewBox="0 0 20 20" fill="currentColor">
-                        <path d="M2 6a2 2 0 012-2h5l2 2h5a2 2 0 012 2v6a2 2 0 01-2 2H4a2 2 0 01-2-2V6z" />
-                      </svg>
-                      {cat.category_name}
+                  {categories.length === 0 ? (
+                    <div className="settings-empty-hint">
+                      <p>No categories yet. Add one on the left — try &quot;Beverages&quot; or &quot;Snacks&quot; to get started.</p>
                     </div>
-                  ))}
+                  ) : (
+                    categories.map((cat) => (
+                      <div key={cat.category_id} className="category-item">
+                        <svg width="20" height="20" viewBox="0 0 20 20" fill="currentColor">
+                          <path d="M2 6a2 2 0 012-2h5l2 2h5a2 2 0 012 2v6a2 2 0 01-2 2H4a2 2 0 01-2-2V6z" />
+                        </svg>
+                        {cat.category_name}
+                      </div>
+                    ))
+                  )}
                 </div>
               </div>
             </div>
           </div>
         )}
 
+        {/* ── SUPPLIERS ── */}
         {activeTab === 'suppliers' && (
           <div className="grid grid-2">
             <div className="card">
@@ -309,7 +349,6 @@ function Settings({ user }) {
                       required
                     />
                   </div>
-
                   <div className="form-group">
                     <label className="form-label">Contact Person</label>
                     <input
@@ -319,7 +358,6 @@ function Settings({ user }) {
                       onChange={(e) => setNewSupplier({ ...newSupplier, contact_person: e.target.value })}
                     />
                   </div>
-
                   <div className="form-group">
                     <label className="form-label">Phone</label>
                     <input
@@ -329,7 +367,6 @@ function Settings({ user }) {
                       onChange={(e) => setNewSupplier({ ...newSupplier, phone: e.target.value })}
                     />
                   </div>
-
                   <div className="form-group">
                     <label className="form-label">Email</label>
                     <input
@@ -339,7 +376,6 @@ function Settings({ user }) {
                       onChange={(e) => setNewSupplier({ ...newSupplier, email: e.target.value })}
                     />
                   </div>
-
                   <div className="form-group">
                     <label className="form-label">Address</label>
                     <textarea
@@ -349,7 +385,6 @@ function Settings({ user }) {
                       rows="3"
                     ></textarea>
                   </div>
-
                   <button type="submit" className="btn btn-primary w-full">
                     Add Supplier
                   </button>
@@ -363,19 +398,25 @@ function Settings({ user }) {
               </div>
               <div className="card-body">
                 <div className="supplier-list">
-                  {suppliers.map((sup) => (
-                    <div key={sup.supplier_id} className="supplier-item">
-                      <div className="supplier-header">
-                        <svg width="20" height="20" viewBox="0 0 20 20" fill="currentColor">
-                          <path fillRule="evenodd" d="M4 4a2 2 0 00-2 2v8a2 2 0 002 2h12a2 2 0 002-2V8a2 2 0 00-2-2h-5L9 4H4z" />
-                        </svg>
-                        <strong>{sup.supplier_name}</strong>
-                      </div>
-                      {sup.contact_person && <p>Contact: {sup.contact_person}</p>}
-                      {sup.phone && <p>Phone: {sup.phone}</p>}
-                      {sup.email && <p>Email: {sup.email}</p>}
+                  {suppliers.length === 0 ? (
+                    <div className="settings-empty-hint">
+                      <p>No suppliers yet. Add your first partner on the left — for example &quot;Local Bakery&quot;.</p>
                     </div>
-                  ))}
+                  ) : (
+                    suppliers.map((sup) => (
+                      <div key={sup.supplier_id} className="supplier-item">
+                        <div className="supplier-header">
+                          <svg width="20" height="20" viewBox="0 0 20 20" fill="currentColor">
+                            <path fillRule="evenodd" d="M4 4a2 2 0 00-2 2v8a2 2 0 002 2h12a2 2 0 002-2V8a2 2 0 00-2-2h-5L9 4H4z" />
+                          </svg>
+                          <strong>{sup.supplier_name}</strong>
+                        </div>
+                        {sup.contact_person && <p>Contact: {sup.contact_person}</p>}
+                        {sup.phone && <p>Phone: {sup.phone}</p>}
+                        {sup.email && <p>Email: {sup.email}</p>}
+                      </div>
+                    ))
+                  )}
                 </div>
               </div>
             </div>

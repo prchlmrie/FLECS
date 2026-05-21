@@ -94,3 +94,159 @@
   background: none;
   color: var(--text-secondary);
 }
+
+.inventory-banner a {
+  color: var(--primary);
+  font-weight: 600;
+}
+
+.inventory-row-low-stock {
+  background-color: rgba(251, 191, 36, 0.08);
+}
+
+.inventory-row-low-stock:hover {
+  background-color: rgba(251, 191, 36, 0.14);
+}
+
+.inventory-row-archived {
+  opacity: 0.92;
+}
+
+.inventory-shelf-tabs {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 20px;
+  padding-bottom: 16px;
+  border-bottom: 1px solid var(--border-color);
+}
+
+.inventory-shelf-tab {
+  padding: 10px 18px;
+  border-radius: var(--radius-md);
+  border: 2px solid var(--border-color);
+  background: var(--bg-primary);
+  font-family: inherit;
+  font-weight: 600;
+  font-size: 0.9rem;
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: all var(--transition-fast);
+}
+
+.inventory-shelf-tab:hover {
+  border-color: var(--primary);
+  color: var(--primary);
+}
+
+.inventory-shelf-tab.is-active {
+  border-color: var(--primary);
+  background: rgba(4, 120, 87, 0.08);
+  color: var(--primary);
+}
+
+.inventory-empty {
+  text-align: center;
+  padding: 48px 24px 40px;
+  max-width: 480px;
+  margin: 0 auto;
+}
+
+.inventory-empty-title {
+  margin: 0 0 12px;
+  font-size: 1.35rem;
+  font-weight: 800;
+  color: var(--text-primary);
+}
+
+.inventory-empty-text {
+  margin: 0 0 24px;
+  color: var(--text-secondary);
+  line-height: 1.6;
+  font-size: 1rem;
+}
+
+.inventory-empty-cta {
+  font-size: 1.05rem;
+  padding: 14px 28px;
+}
+
+.inventory-empty-links {
+  margin: 20px 0 0;
+  font-size: 0.95rem;
+}
+
+.inventory-empty-links a {
+  color: var(--primary);
+  font-weight: 600;
+}
+
+.inventory-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+}
+
+.inventory-remove-shelf {
+  white-space: nowrap;
+}
+
+.btn-outline-danger {
+  border: 2px solid var(--danger);
+  color: var(--danger);
+  background: transparent;
+}
+
+.btn-outline-danger:hover:not(:disabled) {
+  background: rgba(220, 38, 38, 0.08);
+}
+
+.inventory-muted {
+  font-size: 0.85rem;
+  color: var(--text-tertiary);
+}
+
+.stock-pill {
+  display: inline-block;
+  padding: 6px 12px;
+  border-radius: 999px;
+  font-size: 0.82rem;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  cursor: default;
+}
+
+.stock-pill-out {
+  background: rgba(220, 38, 38, 0.12);
+  color: #b91c1c;
+}
+
+.stock-pill-low {
+  background: rgba(251, 191, 36, 0.25);
+  color: #92400e;
+}
+
+.stock-pill-high {
+  background: rgba(59, 130, 246, 0.12);
+  color: #1d4ed8;
+}
+
+.stock-pill-ok {
+  background: rgba(16, 185, 129, 0.12);
+  color: #047857;
+}
+
+.modal-confirm-wide {
+  max-width: 520px;
+}
+
+.archive-modal-lead {
+  margin: 0 0 14px;
+  font-size: 1.05rem;
+  line-height: 1.55;
+  color: var(--text-primary);
+}
+
+.archive-modal-lead:last-child {
+  margin-bottom: 0;
+}

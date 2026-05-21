@@ -1,6 +1,30 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
+import { Link } from 'react-router-dom';
 import api from '../api';
+<<<<<<< Updated upstream
+=======
+import HelpTooltip from './HelpTooltip';
+import { markProductAdded } from '../onboardingStorage';
+>>>>>>> Stashed changes
 import './Inventory.css';
+
+const SEARCH_DEBOUNCE_MS = 320;
+
+function buildProductPayload(formData) {
+  const barcodeTrim = (formData.barcode || '').trim();
+  return {
+    name: formData.name.trim(),
+    sku: formData.sku.trim(),
+    barcode: barcodeTrim || null,
+    category_id: Number(formData.category_id),
+    supplier_id: Number(formData.supplier_id),
+    cost_price: parseFloat(formData.cost_price),
+    selling_price: parseFloat(formData.selling_price),
+    stock_level: parseInt(formData.stock_level, 10),
+    reorder_point: parseInt(formData.reorder_point, 10),
+    lead_time_days: parseInt(formData.lead_time_days, 10),
+  };
+}
 
 function Inventory({ user }) {
   const [products, setProducts] = useState([]);
@@ -8,6 +32,7 @@ function Inventory({ user }) {
   const [suppliers, setSuppliers] = useState([]);
   const [loading, setLoading] = useState(true);
   const [searchTerm, setSearchTerm] = useState('');
+  const [debouncedSearch, setDebouncedSearch] = useState('');
   const [selectedCategory, setSelectedCategory] = useState('');
   const [showModal, setShowModal] = useState(false);
   const [editingProduct, setEditingProduct] = useState(null);
@@ -25,16 +50,32 @@ function Inventory({ user }) {
   });
   const [error, setError] = useState('');
   const [success, setSuccess] = useState('');
+  const [showArchived, setShowArchived] = useState(false);
+  const [archiveTarget, setArchiveTarget] = useState(null);
+  const [archiveSubmitting, setArchiveSubmitting] = useState(false);
+  const [restoreSubmittingId, setRestoreSubmittingId] = useState(null);
+  const isFirstLoad = useRef(true);
+
+  useEffect(() => {
+    const t = setTimeout(() => setDebouncedSearch(searchTerm.trim()), SEARCH_DEBOUNCE_MS);
+    return () => clearTimeout(t);
+  }, [searchTerm]);
 
   useEffect(() => {
     loadData();
-  }, [searchTerm, selectedCategory]);
+  }, [debouncedSearch, selectedCategory, showArchived]);
 
   const loadData = async () => {
     try {
-      setLoading(true);
+      if (isFirstLoad.current) {
+        setLoading(true);
+      }
       const [productsRes, categoriesRes, suppliersRes] = await Promise.all([
-        api.getProducts({ search: searchTerm, category: selectedCategory }),
+        api.getProducts({
+          search: debouncedSearch,
+          category: selectedCategory,
+          ...(showArchived ? { archived: 1 } : {}),
+        }),
         api.getCategories(),
         api.getSuppliers()
       ]);
@@ -46,7 +87,26 @@ function Inventory({ user }) {
       console.error(err);
     } finally {
       setLoading(false);
+      isFirstLoad.current = false;
     }
+  };
+
+  const validateFormClient = () => {
+    if (!formData.name.trim()) return 'Product name is required.';
+    if (!formData.sku.trim()) return 'SKU is required.';
+    if (!formData.category_id) return 'Please select a category.';
+    if (!formData.supplier_id) return 'Please select a supplier.';
+    const cost = parseFloat(formData.cost_price);
+    const sell = parseFloat(formData.selling_price);
+    if (Number.isNaN(cost) || cost < 0) return 'Cost price must be a valid non-negative number.';
+    if (Number.isNaN(sell) || sell < 0) return 'Selling price must be a valid non-negative number.';
+    const stock = parseInt(formData.stock_level, 10);
+    if (Number.isNaN(stock) || stock < 0) return 'Stock level must be zero or greater.';
+    const rp = parseInt(formData.reorder_point, 10);
+    if (Number.isNaN(rp) || rp < 0) return 'Reorder point must be zero or greater.';
+    const lt = parseInt(formData.lead_time_days, 10);
+    if (Number.isNaN(lt) || lt < 1) return 'Lead time must be at least 1 day.';
+    return '';
   };
 
   const handleSubmit = async (e) => {
@@ -54,12 +114,21 @@ function Inventory({ user }) {
     setError('');
     setSuccess('');
 
+    const clientErr = validateFormClient();
+    if (clientErr) {
+      setError(clientErr);
+      return;
+    }
+
+    const payload = buildProductPayload(formData);
+
     try {
       if (editingProduct) {
-        await api.updateProduct(editingProduct.product_id, formData);
+        await api.updateProduct(editingProduct.product_id, payload);
         setSuccess('Product updated successfully!');
       } else {
-        await api.createProduct(formData);
+        await api.createProduct(payload);
+        markProductAdded();
         setSuccess('Product created successfully!');
       }
       
@@ -90,18 +159,35 @@ function Inventory({ user }) {
     setShowModal(true);
   };
 
-  const handleDelete = async (productId, productName) => {
-    if (!window.confirm(`Are you sure you want to delete "${productName}"?`)) {
-      return;
-    }
-
+  const handleConfirmArchive = async () => {
+    if (!archiveTarget) return;
+    setArchiveSubmitting(true);
+    setError('');
     try {
-      await api.deleteProduct(productId);
-      setSuccess('Product deleted successfully!');
+      await api.deleteProduct(archiveTarget.product_id);
+      setArchiveTarget(null);
+      setSuccess('Item removed from the shelf. You can bring it back anytime from Archived products.');
+      loadData();
+      setTimeout(() => setSuccess(''), 4000);
+    } catch (err) {
+      setError(err.response?.data?.error || 'Could not update this item');
+    } finally {
+      setArchiveSubmitting(false);
+    }
+  };
+
+  const handleRestoreProduct = async (product) => {
+    setRestoreSubmittingId(product.product_id);
+    setError('');
+    try {
+      await api.restoreProduct(product.product_id);
+      setSuccess(`"${product.name}" is back on the shelf.`);
       loadData();
       setTimeout(() => setSuccess(''), 3000);
     } catch (err) {
-      setError(err.response?.data?.error || 'Delete failed');
+      setError(err.response?.data?.error || 'Restore failed');
+    } finally {
+      setRestoreSubmittingId(null);
     }
   };
 
@@ -128,14 +214,63 @@ function Inventory({ user }) {
     });
   };
 
-  const getLowStockBadge = (product) => {
-    if (product.stock_level === 0) {
-      return <span className="badge badge-danger">Out of Stock</span>;
-    } else if (product.stock_level <= product.reorder_point) {
-      return <span className="badge badge-warning">Low Stock</span>;
-    } else {
-      return <span className="badge badge-success">In Stock</span>;
+  const getStockStatus = (product) => {
+    const level = Number(product.stock_level);
+    const threshold = Number(product.reorder_point);
+    const highLine =
+      threshold > 0 && level >= threshold * 5
+        ? 'You have a lot more on hand than your usual reorder level — that is fine if you expect strong sales.'
+        : null;
+
+    if (level === 0) {
+      return {
+        kind: 'out',
+        label: 'None left',
+        title: 'You have sold out. Restock when you can.',
+      };
     }
+    if (level <= threshold) {
+      return {
+        kind: 'low',
+        label: 'Running low',
+        title: `You have ${level} left. We nudge you when you reach ${threshold} (your reorder point).`,
+      };
+    }
+    if (highLine) {
+      return {
+        kind: 'high',
+        label: 'Plenty on hand',
+        title: highLine,
+      };
+    }
+    return {
+      kind: 'ok',
+      label: 'Looks fine',
+      title: `About ${level} on hand — above your alert level of ${threshold}.`,
+    };
+  };
+
+  const renderStockStatus = (product) => {
+    const s = getStockStatus(product);
+    const pillClass =
+      s.kind === 'out'
+        ? 'stock-pill stock-pill-out'
+        : s.kind === 'low'
+          ? 'stock-pill stock-pill-low'
+          : s.kind === 'high'
+            ? 'stock-pill stock-pill-high'
+            : 'stock-pill stock-pill-ok';
+    return (
+      <span className={pillClass} title={s.title}>
+        {s.label}
+      </span>
+    );
+  };
+
+  const isLowStockRow = (product) => {
+    const level = Number(product.stock_level);
+    const threshold = Number(product.reorder_point);
+    return level === 0 || level <= threshold;
   };
 
   if (loading) {
@@ -149,12 +284,23 @@ function Inventory({ user }) {
           <h1>Inventory Management</h1>
           <p className="page-subtitle">Manage your products, stock levels, and suppliers</p>
         </div>
+<<<<<<< Updated upstream
         <button className="btn btn-primary" onClick={() => setShowModal(true)}>
           <svg width="20" height="20" viewBox="0 0 20 20" fill="currentColor">
             <path fillRule="evenodd" d="M10 3a1 1 0 011 1v5h5a1 1 0 110 2h-5v5a1 1 0 11-2 0v-5H4a1 1 0 110-2h5V4a1 1 0 011-1z" />
           </svg>
           Add Product
         </button>
+=======
+        {!showArchived && (
+          <button className="btn btn-primary" type="button" onClick={() => setShowModal(true)}>
+            <svg width="20" height="20" viewBox="0 0 20 20" fill="currentColor">
+              <path fillRule="evenodd" d="M10 3a1 1 0 011 1v5h5a1 1 0 110 2h-5v5a1 1 0 11-2 0v-5H4a1 1 0 110-2h5V4a1 1 0 011-1z" />
+            </svg>
+            Add Product
+          </button>
+        )}
+>>>>>>> Stashed changes
       </div>
 
       {success && (
@@ -176,6 +322,33 @@ function Inventory({ user }) {
       )}
 
       <div className="card">
+        <div className="inventory-shelf-tabs" role="tablist" aria-label="Product shelf">
+          <button
+            type="button"
+            role="tab"
+            aria-selected={!showArchived}
+            className={`inventory-shelf-tab ${!showArchived ? 'is-active' : ''}`}
+            onClick={() => setShowArchived(false)}
+          >
+            On the shelf
+          </button>
+          <button
+            type="button"
+            role="tab"
+            aria-selected={showArchived}
+            className={`inventory-shelf-tab ${showArchived ? 'is-active' : ''}`}
+            onClick={() => setShowArchived(true)}
+          >
+            Archived products
+          </button>
+        </div>
+
+        {suppliers.length === 0 && !showArchived && (
+          <div className="alert alert-error inventory-banner">
+            No suppliers are defined. Add suppliers under{' '}
+            <Link to="/settings">Settings</Link> before creating products, or reload after the server seeds defaults.
+          </div>
+        )}
         <div className="inventory-filters">
           <div className="search-box">
             <svg width="20" height="20" viewBox="0 0 20 20" fill="currentColor">
@@ -209,30 +382,95 @@ function Inventory({ user }) {
             <thead>
               <tr>
                 <th>Product</th>
-                <th>SKU</th>
+                <th className="th-with-help">
+                  <span className="label-with-help">
+                    SKU
+                    <HelpTooltip text="Your own internal code for this item." />
+                  </span>
+                </th>
                 <th>Category</th>
+                <th>Supplier</th>
                 <th>Cost Price</th>
                 <th>Selling Price</th>
                 <th>Stock</th>
+<<<<<<< Updated upstream
                 <th>Status</th>
+=======
+                <th className="th-with-help">
+                  <span className="label-with-help">
+                    Reorder point
+                    <HelpTooltip text="We will alert you when stock falls to this number." />
+                  </span>
+                </th>
+                <th>Quick read</th>
+>>>>>>> Stashed changes
                 <th>Actions</th>
               </tr>
             </thead>
             <tbody>
               {products.length === 0 ? (
                 <tr>
+<<<<<<< Updated upstream
                   <td colSpan="8" style={{ textAlign: 'center', padding: '40px' }}>
                     <div style={{ color: '#94a3b8' }}>
                       <svg width="64" height="64" viewBox="0 0 24 24" fill="none" stroke="currentColor" style={{ margin: '0 auto 16px' }}>
                         <path d="M20 7h-9M14 17h6M9 7H5a2 2 0 00-2 2v10a2 2 0 002 2h14a2 2 0 002-2v-5" />
                       </svg>
                       <p>No products found. Add your first product to get started!</p>
+=======
+                  <td colSpan="10">
+                    <div className="inventory-empty">
+                      {showArchived ? (
+                        <>
+                          <h3 className="inventory-empty-title">Nothing archived yet</h3>
+                          <p className="inventory-empty-text">
+                            When you remove an item from the shelf, it appears here. Past sales stay intact — you can
+                            always put an item back on the shelf.
+                          </p>
+                        </>
+                      ) : (
+                        <>
+                          <h3 className="inventory-empty-title">You have not added any products yet</h3>
+                          <p className="inventory-empty-text">
+                            Click the big green button below to add your first product. If you have not set up
+                            categories or suppliers yet, visit Settings first — the checklist on your Dashboard can walk
+                            you through it.
+                          </p>
+                          <button
+                            type="button"
+                            className="btn btn-primary inventory-empty-cta"
+                            onClick={() => setShowModal(true)}
+                          >
+                            Add your first product
+                          </button>
+                          <p className="inventory-empty-links">
+                            <Link to="/settings">Open Settings</Link>
+                            {' · '}
+                            <Link to="/dashboard">Back to Dashboard</Link>
+                          </p>
+                        </>
+                      )}
+>>>>>>> Stashed changes
                     </div>
                   </td>
                 </tr>
               ) : (
                 products.map(product => (
+<<<<<<< Updated upstream
                   <tr key={product.product_id}>
+=======
+                  <tr
+                    key={product.product_id}
+                    className={
+                      [
+                        !showArchived && isLowStockRow(product) ? 'inventory-row-low-stock' : '',
+                        showArchived ? 'inventory-row-archived' : '',
+                      ]
+                        .filter(Boolean)
+                        .join(' ') || undefined
+                    }
+                  >
+>>>>>>> Stashed changes
                     <td>
                       <strong>{product.name}</strong>
                       {product.barcode && (
@@ -242,35 +480,52 @@ function Inventory({ user }) {
                       )}
                     </td>
                     <td className="monospace">{product.sku}</td>
-                    <td>{product.category_name || '-'}</td>
+                    <td>{product.category_name || '—'}</td>
+                    <td>{product.supplier_name || '—'}</td>
                     <td>₱{parseFloat(product.cost_price).toFixed(2)}</td>
                     <td>₱{parseFloat(product.selling_price).toFixed(2)}</td>
                     <td>
                       <strong>{product.stock_level}</strong> units
                     </td>
-                    <td>{getLowStockBadge(product)}</td>
+                    <td className="monospace">{product.reorder_point}</td>
+                    <td>{renderStockStatus(product)}</td>
                     <td>
-                      <div className="action-buttons">
-                        <button
-                          className="btn-icon"
-                          onClick={() => handleEdit(product)}
-                          title="Edit"
-                        >
-                          <svg width="18" height="18" viewBox="0 0 20 20" fill="currentColor">
-                            <path d="M13.586 3.586a2 2 0 112.828 2.828l-.793.793-2.828-2.828.793-.793zM11.379 5.793L3 14.172V17h2.828l8.38-8.379-2.83-2.828z" />
-                          </svg>
-                        </button>
-                        {user.role === 'administrator' && (
-                          <button
-                            className="btn-icon btn-danger"
-                            onClick={() => handleDelete(product.product_id, product.name)}
-                            title="Delete"
-                            disabled={product.stock_level > 0}
-                          >
-                            <svg width="18" height="18" viewBox="0 0 20 20" fill="currentColor">
-                              <path fillRule="evenodd" d="M9 2a1 1 0 00-.894.553L7.382 4H4a1 1 0 000 2v10a2 2 0 002 2h8a2 2 0 002-2V6a1 1 0 100-2h-3.382l-.724-1.447A1 1 0 0011 2H9zM7 8a1 1 0 012 0v6a1 1 0 11-2 0V8zm5-1a1 1 0 00-1 1v6a1 1 0 102 0V8a1 1 0 00-1-1z" />
-                            </svg>
-                          </button>
+                      <div className="inventory-actions">
+                        {showArchived ? (
+                          user.role === 'administrator' ? (
+                            <button
+                              type="button"
+                              className="btn btn-secondary btn-sm"
+                              disabled={restoreSubmittingId === product.product_id}
+                              onClick={() => handleRestoreProduct(product)}
+                            >
+                              {restoreSubmittingId === product.product_id ? 'Restoring…' : 'Put back on shelf'}
+                            </button>
+                          ) : (
+                            <span className="inventory-muted">Admin can restore</span>
+                          )
+                        ) : (
+                          <>
+                            <button
+                              type="button"
+                              className="btn-icon"
+                              onClick={() => handleEdit(product)}
+                              title="Edit"
+                            >
+                              <svg width="18" height="18" viewBox="0 0 20 20" fill="currentColor">
+                                <path d="M13.586 3.586a2 2 0 112.828 2.828l-.793.793-2.828-2.828.793-.793zM11.379 5.793L3 14.172V17h2.828l8.38-8.379-2.83-2.828z" />
+                              </svg>
+                            </button>
+                            {user.role === 'administrator' && (
+                              <button
+                                type="button"
+                                className="btn btn-outline-danger btn-sm inventory-remove-shelf"
+                                onClick={() => setArchiveTarget(product)}
+                              >
+                                Remove from shelf
+                              </button>
+                            )}
+                          </>
                         )}
                       </div>
                     </td>
@@ -312,7 +567,10 @@ function Inventory({ user }) {
                   </div>
 
                   <div className="form-group">
-                    <label className="form-label">SKU *</label>
+                    <label className="form-label label-with-help">
+                      SKU *
+                      <HelpTooltip text="Your own internal code for this item." />
+                    </label>
                     <input
                       type="text"
                       name="sku"
@@ -337,14 +595,15 @@ function Inventory({ user }) {
                   </div>
 
                   <div className="form-group">
-                    <label className="form-label">Category</label>
+                    <label className="form-label">Category *</label>
                     <select
                       name="category_id"
                       className="form-select"
                       value={formData.category_id}
                       onChange={handleChange}
+                      required
                     >
-                      <option value="">Select Category</option>
+                      <option value="">Select category</option>
                       {categories.map(cat => (
                         <option key={cat.category_id} value={cat.category_id}>
                           {cat.category_name}
@@ -354,14 +613,15 @@ function Inventory({ user }) {
                   </div>
 
                   <div className="form-group">
-                    <label className="form-label">Supplier</label>
+                    <label className="form-label">Supplier *</label>
                     <select
                       name="supplier_id"
                       className="form-select"
                       value={formData.supplier_id}
                       onChange={handleChange}
+                      required
                     >
-                      <option value="">Select Supplier</option>
+                      <option value="">Select supplier</option>
                       {suppliers.map(sup => (
                         <option key={sup.supplier_id} value={sup.supplier_id}>
                           {sup.supplier_name}
@@ -415,20 +675,27 @@ function Inventory({ user }) {
                   </div>
 
                   <div className="form-group">
-                    <label className="form-label">Reorder Point</label>
+                    <label className="form-label label-with-help">
+                      Reorder point *
+                      <HelpTooltip text="We will alert you when stock falls to this number." />
+                    </label>
                     <input
                       type="number"
                       name="reorder_point"
                       className="form-input"
                       value={formData.reorder_point}
                       onChange={handleChange}
+                      required
                       min="0"
                       placeholder="10"
                     />
                   </div>
 
                   <div className="form-group">
-                    <label className="form-label">Lead Time (days)</label>
+                    <label className="form-label label-with-help">
+                      Lead time (days)
+                      <HelpTooltip text="How many days it usually takes for your supplier to deliver this." />
+                    </label>
                     <input
                       type="number"
                       name="lead_time_days"
@@ -455,6 +722,68 @@ function Inventory({ user }) {
                 </button>
               </div>
             </form>
+          </div>
+        </div>
+      )}
+
+      {archiveTarget && (
+        <div
+          className="modal-overlay"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="archive-modal-title"
+          onClick={() => !archiveSubmitting && setArchiveTarget(null)}
+        >
+          <div className="modal modal-confirm-wide" onClick={(e) => e.stopPropagation()}>
+            <div className="modal-header">
+              <h3 id="archive-modal-title" className="modal-title">
+                Wait — remove this from the shelf?
+              </h3>
+              <button
+                type="button"
+                className="modal-close"
+                disabled={archiveSubmitting}
+                onClick={() => setArchiveTarget(null)}
+                aria-label="Close"
+              >
+                ×
+              </button>
+            </div>
+            <div className="modal-body">
+              <p className="archive-modal-lead">
+                You are about to stop selling <strong>{archiveTarget.name}</strong>
+                {archiveTarget.sku ? (
+                  <>
+                    {' '}
+                    (<span className="monospace">{archiveTarget.sku}</span>)
+                  </>
+                ) : null}
+                . It disappears from the till and inventory lists, but{' '}
+                <strong>nothing is permanently deleted</strong>.
+              </p>
+              <p className="archive-modal-lead">
+                You can always find it again under <strong>Archived products</strong> and put it back on the shelf when
+                you are ready.
+              </p>
+            </div>
+            <div className="modal-footer">
+              <button
+                type="button"
+                className="btn btn-secondary"
+                disabled={archiveSubmitting}
+                onClick={() => setArchiveTarget(null)}
+              >
+                Keep selling this item
+              </button>
+              <button
+                type="button"
+                className="btn btn-danger"
+                disabled={archiveSubmitting}
+                onClick={handleConfirmArchive}
+              >
+                {archiveSubmitting ? 'Working…' : 'Yes, remove from shelf'}
+              </button>
+            </div>
           </div>
         </div>
       )}

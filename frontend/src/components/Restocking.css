@@ -1,5 +1,6 @@
 .restocking-page {
   animation: fadeIn 0.5s ease;
+  padding-bottom: 120px;
 }
 
 .restock-filters {
@@ -103,6 +104,70 @@ tr.selected {
 .empty-state p {
   color: var(--text-secondary);
   font-size: 1rem;
+}
+
+.po-modal {
+  max-width: 920px;
+  width: 95%;
+}
+
+.po-letterhead {
+  margin-bottom: 20px;
+}
+
+.po-letterhead h2 {
+  margin: 0 0 8px;
+  font-size: 1.35rem;
+}
+
+.po-meta {
+  margin: 0;
+  font-size: 0.9rem;
+  color: var(--text-secondary);
+}
+
+.po-table {
+  margin-top: 12px;
+}
+
+.po-total {
+  margin-top: 20px;
+  text-align: right;
+  font-size: 1.1rem;
+}
+
+@media print {
+  body * {
+    visibility: hidden;
+  }
+
+  .po-print-area,
+  .po-print-area * {
+    visibility: visible;
+  }
+
+  .po-print-area {
+    position: absolute;
+    left: 0;
+    top: 0;
+    width: 100%;
+    padding: 24px;
+  }
+
+  .no-print {
+    display: none !important;
+  }
+
+  .modal-overlay {
+    position: static;
+    background: none;
+  }
+
+  .modal.po-modal {
+    box-shadow: none;
+    max-width: none;
+    width: 100%;
+  }
 }
 
 @media (max-width: 768px) {
