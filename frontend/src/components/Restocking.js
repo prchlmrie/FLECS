@@ -195,8 +195,6 @@ function Restocking() {
         </div>
       </div>
 
-<<<<<<< Updated upstream
-=======
       {/* Feedback banners */}
       {poSuccess && <div className="alert alert-success">{poSuccess}</div>}
       {error && <div className="alert alert-error">{error}</div>}
@@ -220,7 +218,6 @@ function Restocking() {
         </div>
       )}
 
->>>>>>> Stashed changes
       {recommendations.length === 0 ? (
         <div className="card">
           <div className="empty-state">
