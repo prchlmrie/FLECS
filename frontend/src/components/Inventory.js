@@ -1,11 +1,8 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { Link } from 'react-router-dom';
 import api from '../api';
-<<<<<<< Updated upstream
-=======
 import HelpTooltip from './HelpTooltip';
 import { markProductAdded } from '../onboardingStorage';
->>>>>>> Stashed changes
 import './Inventory.css';
 
 const SEARCH_DEBOUNCE_MS = 320;
@@ -284,14 +281,6 @@ function Inventory({ user }) {
           <h1>Inventory Management</h1>
           <p className="page-subtitle">Manage your products, stock levels, and suppliers</p>
         </div>
-<<<<<<< Updated upstream
-        <button className="btn btn-primary" onClick={() => setShowModal(true)}>
-          <svg width="20" height="20" viewBox="0 0 20 20" fill="currentColor">
-            <path fillRule="evenodd" d="M10 3a1 1 0 011 1v5h5a1 1 0 110 2h-5v5a1 1 0 11-2 0v-5H4a1 1 0 110-2h5V4a1 1 0 011-1z" />
-          </svg>
-          Add Product
-        </button>
-=======
         {!showArchived && (
           <button className="btn btn-primary" type="button" onClick={() => setShowModal(true)}>
             <svg width="20" height="20" viewBox="0 0 20 20" fill="currentColor">
@@ -300,7 +289,6 @@ function Inventory({ user }) {
             Add Product
           </button>
         )}
->>>>>>> Stashed changes
       </div>
 
       {success && (
@@ -393,9 +381,6 @@ function Inventory({ user }) {
                 <th>Cost Price</th>
                 <th>Selling Price</th>
                 <th>Stock</th>
-<<<<<<< Updated upstream
-                <th>Status</th>
-=======
                 <th className="th-with-help">
                   <span className="label-with-help">
                     Reorder point
@@ -403,21 +388,12 @@ function Inventory({ user }) {
                   </span>
                 </th>
                 <th>Quick read</th>
->>>>>>> Stashed changes
                 <th>Actions</th>
               </tr>
             </thead>
             <tbody>
               {products.length === 0 ? (
                 <tr>
-<<<<<<< Updated upstream
-                  <td colSpan="8" style={{ textAlign: 'center', padding: '40px' }}>
-                    <div style={{ color: '#94a3b8' }}>
-                      <svg width="64" height="64" viewBox="0 0 24 24" fill="none" stroke="currentColor" style={{ margin: '0 auto 16px' }}>
-                        <path d="M20 7h-9M14 17h6M9 7H5a2 2 0 00-2 2v10a2 2 0 002 2h14a2 2 0 002-2v-5" />
-                      </svg>
-                      <p>No products found. Add your first product to get started!</p>
-=======
                   <td colSpan="10">
                     <div className="inventory-empty">
                       {showArchived ? (
@@ -450,15 +426,11 @@ function Inventory({ user }) {
                           </p>
                         </>
                       )}
->>>>>>> Stashed changes
                     </div>
                   </td>
                 </tr>
               ) : (
                 products.map(product => (
-<<<<<<< Updated upstream
-                  <tr key={product.product_id}>
-=======
                   <tr
                     key={product.product_id}
                     className={
@@ -470,7 +442,6 @@ function Inventory({ user }) {
                         .join(' ') || undefined
                     }
                   >
->>>>>>> Stashed changes
                     <td>
                       <strong>{product.name}</strong>
                       {product.barcode && (

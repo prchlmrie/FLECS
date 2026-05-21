@@ -4,6 +4,7 @@ import './Restocking.css';
 
 function Restocking() {
   const [recommendations, setRecommendations] = useState([]);
+  const [forecastModels, setForecastModels] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [poSuccess, setPoSuccess] = useState('');
@@ -21,6 +22,7 @@ function Restocking() {
       setLoading(true);
       const response = await api.getRestockRecommendations();
       setRecommendations(response.data.recommendations);
+      setForecastModels(response.data.forecast_models || null);
     } catch (err) {
       setError('Failed to load recommendations');
     } finally {
@@ -153,11 +155,55 @@ function Restocking() {
   const printPurchaseOrder = () => window.print();
   const closePOModal = () => { setShowPOModal(false); setPoLines([]); };
 
+  const STATUS_LABELS = {
+    insufficient_sales: 'No sales in the last 90 days (POS history empty for this SKU)',
+    insufficient_history: 'Not enough daily history for this model',
+    sklearn_not_installed: 'Random Forest unavailable (scikit-learn not installed on server)',
+    statsmodels_not_installed: 'Holt-Winters unavailable (statsmodels not installed on server)',
+    fit_failed: 'Could not fit Holt-Winters on this sales pattern',
+  };
+
+  const forecastStatusHint = (code) =>
+    STATUS_LABELS[code] ||
+    forecastModels?.forecast_status_labels?.[code] ||
+    code ||
+    'Forecast not available for this product';
+
+  const winnerLabel = (key) => {
+    if (key === 'random_forest') return 'RF';
+    if (key === 'holt_winters') return 'HW';
+    if (key === 'ses') return 'SES';
+    return key || '—';
+  };
+
+  const winnerBadgeClass = (key) => {
+    if (key === 'random_forest') return 'primary';
+    if (key === 'holt_winters') return 'warning';
+    return 'secondary';
+  };
+
+  const rmseTooltip = (fc) => {
+    if (!fc) return '';
+    return [
+      `SES RMSE: ${fc.ses_holdout_rmse ?? 'n/a'}`,
+      `RF RMSE: ${fc.rf_holdout_rmse ?? 'n/a'}`,
+      `HW RMSE: ${fc.hw_holdout_rmse ?? 'n/a'}`,
+    ].join(' · ');
+  };
+
   const exportToCSV = () => {
     const filtered = getFilteredRecommendations();
     const csvContent = [
-      ['Product', 'SKU', 'Priority', 'Current Stock', 'Reorder Point', 'Suggested Qty', 'Cost per Unit', 'Total Cost'],
-      ...filtered.map(r => [r.name, r.sku, r.priority, r.current_stock, r.reorder_point, r.suggested_quantity, r.cost_price, r.estimated_cost])
+      ['Product', 'SKU', 'Priority', 'Current Stock', 'Reorder Point', 'SES units/day', 'RF units/day', 'HW units/day', 'Holdout winner', 'SES RMSE', 'RF RMSE', 'HW RMSE', 'Suggested Qty', 'Cost per Unit', 'Total Cost'],
+      ...filtered.map(r => [
+        r.name, r.sku, r.priority, r.current_stock, r.reorder_point,
+        r.avg_daily_sales, r.rf_avg_daily_sales ?? '', r.hw_avg_daily_sales ?? '',
+        r.forecast_comparison?.holdout_winner ?? '',
+        r.forecast_comparison?.ses_holdout_rmse ?? '',
+        r.forecast_comparison?.rf_holdout_rmse ?? '',
+        r.forecast_comparison?.hw_holdout_rmse ?? '',
+        r.suggested_quantity, r.cost_price, r.estimated_cost,
+      ])
     ].map(row => row.join(',')).join('\n');
     const blob = new Blob([csvContent], { type: 'text/csv' });
     const url = window.URL.createObjectURL(blob);
@@ -175,8 +221,9 @@ function Restocking() {
         <div>
           <h1>Restocking Recommendations</h1>
           <p className="page-subtitle">
-            Demand forecast uses <strong>simple exponential smoothing</strong> on daily sales.
-            Select items to generate a purchase order or send a stock request directly to your supplier.
+            Compare <strong>SES</strong>, <strong>Random Forest</strong>, and <strong>Holt-Winters</strong> daily demand
+            forecasts on recent sales. Restock quantities still use SES only; other models are for comparison.
+            Select items to generate a purchase order or send a stock request to your supplier.
           </p>
         </div>
         <div className="flex gap-2">
@@ -195,16 +242,14 @@ function Restocking() {
         </div>
       </div>
 
-<<<<<<< Updated upstream
-=======
-      {/* Feedback banners */}
       {poSuccess && <div className="alert alert-success">{poSuccess}</div>}
       {error && <div className="alert alert-error">{error}</div>}
 
-      {/* Stock request result banner */}
       {requestResult && (
-        <div className={`alert ${requestResult.failed > 0 || requestResult.skipped > 0 ? 'alert-warning' : 'alert-success'}`}
-          style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+        <div
+          className={`alert ${requestResult.failed > 0 || requestResult.skipped > 0 ? 'alert-warning' : 'alert-success'}`}
+          style={{ display: 'flex', flexDirection: 'column', gap: 4 }}
+        >
           <strong>
             {requestResult.sent > 0
               ? `✅ ${requestResult.sent} stock request${requestResult.sent > 1 ? 's' : ''} sent to supplier${requestResult.sent > 1 ? 's' : ''}.`
@@ -220,7 +265,6 @@ function Restocking() {
         </div>
       )}
 
->>>>>>> Stashed changes
       {recommendations.length === 0 ? (
         <div className="card">
           <div className="empty-state">
@@ -289,7 +333,10 @@ function Restocking() {
                     <th>Product</th>
                     <th>Current Stock</th>
                     <th>Reorder Point</th>
-                    <th>SES forecast (units/day)</th>
+                    <th>SES (units/day)</th>
+                    <th>Random Forest (units/day)</th>
+                    <th>Holt-Winters (units/day)</th>
+                    <th>Holdout winner</th>
                     <th>Suggested Qty</th>
                     <th>Lead Time</th>
                     <th>Est. Cost</th>
@@ -327,7 +374,50 @@ function Restocking() {
                       </td>
                       <td>{item.reorder_point} units</td>
                       <td title={item.naive_avg_daily != null ? `Naive mean/day: ${item.naive_avg_daily}` : ''}>
-                        {Number(item.avg_daily_sales).toFixed(2)} units/day
+                        {Number(item.avg_daily_sales).toFixed(2)}
+                      </td>
+                      <td>
+                        {item.rf_avg_daily_sales != null ? (
+                          <span title={`Δ vs SES: ${item.forecast_comparison?.difference_units ?? '—'} units/day`}>
+                            {Number(item.rf_avg_daily_sales).toFixed(2)}
+                          </span>
+                        ) : (
+                          <span
+                            className="forecast-na"
+                            title={forecastStatusHint(item.forecast_comparison?.rf_status)}
+                          >
+                            —
+                          </span>
+                        )}
+                      </td>
+                      <td>
+                        {item.hw_avg_daily_sales != null ? (
+                          <span>{Number(item.hw_avg_daily_sales).toFixed(2)}</span>
+                        ) : (
+                          <span
+                            className="forecast-na"
+                            title={forecastStatusHint(item.forecast_comparison?.hw_status)}
+                          >
+                            —
+                          </span>
+                        )}
+                      </td>
+                      <td>
+                        {item.forecast_comparison?.holdout_winner ? (
+                          <span
+                            className={`badge badge-${winnerBadgeClass(item.forecast_comparison.holdout_winner)}`}
+                            title={rmseTooltip(item.forecast_comparison)}
+                          >
+                            {winnerLabel(item.forecast_comparison.holdout_winner)}
+                          </span>
+                        ) : (
+                          <span
+                            className="forecast-na"
+                            title="Holdout comparison did not run (need more sales history or models could not be scored)"
+                          >
+                            —
+                          </span>
+                        )}
                       </td>
                       <td><strong className="text-primary">{item.suggested_quantity}</strong> units</td>
                       <td>{item.lead_time_days} days</td>
