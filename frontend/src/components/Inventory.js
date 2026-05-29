@@ -2,6 +2,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import { Link } from 'react-router-dom';
 import api from '../api';
 import HelpTooltip from './HelpTooltip';
+import InventoryChat from './InventoryChat';
 import { markProductAdded } from '../onboardingStorage';
 import './Inventory.css';
 
@@ -696,6 +697,8 @@ function Inventory({ user }) {
           </div>
         </div>
       )}
+
+      <InventoryChat />
 
       {archiveTarget && (
         <div

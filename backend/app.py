@@ -15,6 +15,7 @@ import sqlite3
 import json
 import os
 import math
+import time
 from functools import wraps
 from collections import Counter
 import pandas as pd
@@ -23,6 +24,8 @@ from io import BytesIO
 from reportlab.lib.pagesizes import letter
 from reportlab.pdfgen import canvas
 import csv
+import urllib.request
+import urllib.error
 
 _backend_dir = os.path.dirname(os.path.abspath(__file__))
 load_dotenv(os.path.join(_backend_dir, '.env'))
@@ -42,6 +45,129 @@ FORECAST_HISTORY_DAYS = int(os.environ.get('FLECS_FORECAST_HISTORY_DAYS', '90'))
 SES_ALPHA = float(os.environ.get('FLECS_SES_ALPHA', '0.35'))
 
 VALID_ROLES = ('administrator', 'owner', 'supplier')
+
+# OpenRouter free models — ids from https://openrouter.ai/api/v1/models (:free)
+OPENROUTER_MODEL_ALIASES = {
+    'llama': 'meta-llama/llama-3.3-70b-instruct:free',
+    'gemma': 'google/gemma-4-31b-it:free',
+    'deepseek': 'deepseek/deepseek-v4-flash:free',
+    'qwen': 'qwen/qwen3-next-80b-a3b-instruct:free',
+    'auto': 'openrouter/free',
+}
+OPENROUTER_DEFAULT_MODEL = OPENROUTER_MODEL_ALIASES['auto']
+OPENROUTER_FALLBACK_MODELS = [
+    OPENROUTER_MODEL_ALIASES['qwen'],
+    OPENROUTER_MODEL_ALIASES['gemma'],
+    OPENROUTER_MODEL_ALIASES['deepseek'],
+    OPENROUTER_MODEL_ALIASES['llama'],
+]
+
+
+class OpenRouterError(Exception):
+    def __init__(self, status_code, message, retry_after=None):
+        self.status_code = status_code
+        self.retry_after = retry_after
+        super().__init__(message)
+
+
+def _resolve_openrouter_model(name):
+    if not name or not str(name).strip():
+        return OPENROUTER_DEFAULT_MODEL
+    key = str(name).strip().lower()
+    return OPENROUTER_MODEL_ALIASES.get(key, str(name).strip())
+
+
+def _openrouter_models_to_try():
+    primary = _resolve_openrouter_model(
+        os.environ.get('OPENROUTER_MODEL', 'auto')
+    )
+    env_fallbacks = os.environ.get('OPENROUTER_MODEL_FALLBACKS', '')
+    if env_fallbacks.strip():
+        fallbacks = [
+            _resolve_openrouter_model(m)
+            for m in env_fallbacks.split(',')
+            if m.strip()
+        ]
+    else:
+        fallbacks = list(OPENROUTER_FALLBACK_MODELS)
+    seen = set()
+    ordered = []
+    for model_id in [primary, *fallbacks]:
+        if model_id not in seen:
+            seen.add(model_id)
+            ordered.append(model_id)
+    return ordered
+
+
+def _openrouter_chat(messages, model_id):
+    api_key = os.environ.get('OPENROUTER_API_KEY')
+    if not api_key:
+        raise RuntimeError('OPENROUTER_API_KEY is not configured')
+
+    body = json.dumps({
+        'model': model_id,
+        'messages': messages,
+    }).encode('utf-8')
+    req = urllib.request.Request(
+        os.environ.get(
+            'OPENROUTER_API_URL',
+            'https://openrouter.ai/api/v1/chat/completions',
+        ),
+        data=body,
+        headers={
+            'Authorization': f'Bearer {api_key}',
+            'Content-Type': 'application/json',
+            'HTTP-Referer': os.environ.get('OPENROUTER_HTTP_REFERER', 'http://localhost:3000'),
+            'X-Title': os.environ.get('OPENROUTER_APP_TITLE', 'FLECS'),
+        },
+        method='POST',
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=120) as resp:
+            data = json.loads(resp.read().decode())
+    except urllib.error.HTTPError as exc:
+        detail = exc.read().decode(errors='replace')
+        retry_after = None
+        try:
+            payload = json.loads(detail)
+            meta = (payload.get('error') or {}).get('metadata') or {}
+            retry_after = meta.get('retry_after_seconds')
+        except json.JSONDecodeError:
+            pass
+        raise OpenRouterError(exc.code, detail, retry_after) from exc
+
+    choices = data.get('choices') or []
+    if not choices:
+        raise RuntimeError('OpenRouter returned no choices')
+    content = (choices[0].get('message') or {}).get('content') or ''
+    return content.strip()
+
+
+def _inventory_summary_for_chat(db):
+    """Compact inventory snapshot for the conversational assistant."""
+    rows = db.execute('''
+        SELECT p.name, p.sku, p.stock_level, p.reorder_point, p.lead_time_days,
+               c.category_name, s.supplier_name
+        FROM products p
+        LEFT JOIN categories c ON p.category_id = c.category_id
+        LEFT JOIN suppliers s ON p.supplier_id = s.supplier_id
+        WHERE COALESCE(p.is_archived, 0) = 0
+        ORDER BY p.stock_level ASC, p.name
+        LIMIT 80
+    ''').fetchall()
+    lines = []
+    for r in rows:
+        status = 'LOW' if r['stock_level'] <= r['reorder_point'] else 'OK'
+        lines.append(
+            f"- {r['name']} (SKU {r['sku']}): stock={r['stock_level']}, "
+            f"reorder_point={r['reorder_point']}, lead_days={r['lead_time_days']}, "
+            f"status={status}, category={r['category_name'] or 'N/A'}, "
+            f"supplier={r['supplier_name'] or 'N/A'}"
+        )
+    low_count = sum(1 for r in rows if r['stock_level'] <= r['reorder_point'])
+    header = f"Total products listed: {len(rows)}. Low-stock items in list: {low_count}."
+    return header + "\n" + "\n".join(lines)
+
 
 # ─────────────────────────────────────────────
 # Database helpers
@@ -1870,6 +1996,74 @@ def get_unread_message_count():
     ).fetchone()['c']
     db.close()
     return jsonify({'unread_count': count})
+
+# ─────────────────────────────────────────────
+# INVENTORY CHAT (OpenRouter)
+# ─────────────────────────────────────────────
+@app.route('/api/chat/inventory', methods=['POST'])
+@role_required('administrator', 'owner')
+def chat_inventory():
+    data = request.get_json() or {}
+    message = (data.get('message') or '').strip()
+    if not message:
+        return jsonify({'error': 'message is required'}), 400
+
+    if not os.environ.get('OPENROUTER_API_KEY'):
+        return jsonify({'error': 'OPENROUTER_API_KEY is not configured on the server'}), 503
+
+    db = get_db()
+    try:
+        inventory_context = _inventory_summary_for_chat(db)
+    finally:
+        db.close()
+
+    messages = [
+        {
+            'role': 'system',
+            'content': (
+                'You are FLECS Inventory Assistant for a small retail store. '
+                'Answer in the same language the user used (English, Filipino, or Taglish). '
+                'Use ONLY the inventory data provided. If the answer is not in the data, say so. '
+                'Do not invent products, SKUs, or stock numbers.'
+            ),
+        },
+        {
+            'role': 'user',
+            'content': (
+                f'Inventory snapshot:\n{inventory_context}\n\n'
+                f'User question: {message}'
+            ),
+        },
+    ]
+
+    errors = []
+    max_retries_429 = int(os.environ.get('OPENROUTER_429_RETRIES', '2'))
+
+    for model_id in _openrouter_models_to_try():
+        attempt = 0
+        while attempt <= max_retries_429:
+            try:
+                reply = _openrouter_chat(messages, model_id)
+                if reply:
+                    return jsonify({'reply': reply, 'model': model_id})
+                errors.append(f'{model_id}: empty response')
+                break
+            except OpenRouterError as exc:
+                if exc.status_code == 429 and attempt < max_retries_429:
+                    wait_s = min(int(exc.retry_after or 20) + 1, 30)
+                    time.sleep(wait_s)
+                    attempt += 1
+                    continue
+                errors.append(f'{model_id}: HTTP {exc.status_code}')
+                break
+            except Exception as exc:
+                errors.append(f'{model_id}: {exc}')
+                break
+
+    return jsonify({
+        'error': 'All OpenRouter models failed. ' + '; '.join(errors[:4]),
+    }), 502
+
 
 # ─────────────────────────────────────────────
 # HEALTH

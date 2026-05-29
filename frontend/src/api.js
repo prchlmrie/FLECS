@@ -62,6 +62,9 @@ const api = {
   getDashboard: () => axios.get(`${API_URL}/analytics/dashboard`),
   getRestockRecommendations: () => axios.get(`${API_URL}/analytics/restock-recommendations`),
 
+  // Inventory assistant (admin + owner)
+  chatInventory: (message) => axios.post(`${API_URL}/chat/inventory`, { message }),
+
   // Reports (admin only)
   getSalesReport: (params) => axios.get(`${API_URL}/reports/sales`, { params }),
   getInventoryReport: () => axios.get(`${API_URL}/reports/inventory`),
