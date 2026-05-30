@@ -40,9 +40,18 @@ jwt = JWTManager(app)
 
 DATABASE = os.path.join(_backend_dir, 'flecs.db')
 
-# Demand forecast (restocking): simple exponential smoothing on daily sales
-FORECAST_HISTORY_DAYS = int(os.environ.get('FLECS_FORECAST_HISTORY_DAYS', '90'))
-SES_ALPHA = float(os.environ.get('FLECS_SES_ALPHA', '0.35'))
+from forecasting import (
+    FORECAST_HISTORY_DAYS,
+    SES_ALPHA,
+    HOLDOUT_DAYS,
+    RF_N_LAGS,
+    RF_N_ESTIMATORS,
+    HW_SEASONAL_PERIOD,
+    WINNER_BASIS,
+    FORECAST_STATUS_LABELS,
+    build_product_forecasts,
+    load_daily_sales_bulk,
+)
 
 VALID_ROLES = ('administrator', 'owner', 'supplier')
 
@@ -1359,16 +1368,6 @@ def _build_daily_sales_series(db, product_id, horizon_days):
     return [day_map.get((today - timedelta(days=i)).isoformat(), 0.0) for i in range(horizon_days - 1, -1, -1)]
 
 
-def simple_exponential_smoothing_level(series, alpha):
-    if not series:
-        return 0.0
-    alpha = max(0.01, min(0.99, float(alpha)))
-    level = float(series[0])
-    for x in series[1:]:
-        level = alpha * float(x) + (1.0 - alpha) * level
-    return level
-
-
 @app.route('/api/analytics/restock-recommendations', methods=['GET'])
 @role_required('administrator', 'owner')
 def get_restock_recommendations():
@@ -1383,9 +1382,22 @@ def get_restock_recommendations():
     ''').fetchall()
 
     recommendations = []
+    comparison_summary = {
+        'ses_wins': 0,
+        'random_forest_wins': 0,
+        'holt_winters_wins': 0,
+        'insufficient_data': 0,
+        'items_evaluated': 0,
+    }
+
+    product_ids = [int(p['product_id']) for p in products]
+    sales_by_product = load_daily_sales_bulk(db, product_ids, FORECAST_HISTORY_DAYS)
+
     for product in products:
-        series = _build_daily_sales_series(db, product['product_id'], FORECAST_HISTORY_DAYS)
-        forecast_daily = simple_exponential_smoothing_level(series, SES_ALPHA)
+        pid = int(product['product_id'])
+        series = sales_by_product.get(pid) or _build_daily_sales_series(db, pid, FORECAST_HISTORY_DAYS)
+        fc = build_product_forecasts(series, SES_ALPHA)
+        forecast_daily = fc['ses_units_per_day']
         naive_mean = sum(series) / len(series) if series else 0.0
         stock = int(product['stock_level'])
         reorder_pt = int(product['reorder_point'])
@@ -1401,6 +1413,18 @@ def get_restock_recommendations():
         else:
             priority = 'MEDIUM'
 
+        winner = fc.get('holdout_winner')
+        if fc.get('holdout_days', 0) > 0 and winner:
+            comparison_summary['items_evaluated'] += 1
+            if winner == 'ses':
+                comparison_summary['ses_wins'] += 1
+            elif winner == 'random_forest':
+                comparison_summary['random_forest_wins'] += 1
+            elif winner == 'holt_winters':
+                comparison_summary['holt_winters_wins'] += 1
+        elif fc.get('rf_status') != 'ok' and fc.get('hw_status') != 'ok':
+            comparison_summary['insufficient_data'] += 1
+
         recommendations.append({
             'product_id': product['product_id'],
             'name': product['name'],
@@ -1408,8 +1432,24 @@ def get_restock_recommendations():
             'current_stock': product['stock_level'],
             'reorder_point': product['reorder_point'],
             'suggested_quantity': suggested_quantity,
-            'avg_daily_sales': round(forecast_daily, 4),
+            'avg_daily_sales': forecast_daily,
+            'rf_avg_daily_sales': fc.get('rf_units_per_day'),
+            'hw_avg_daily_sales': fc.get('hw_units_per_day'),
             'naive_avg_daily': round(naive_mean, 4),
+            'forecast_comparison': {
+                'ses_units_per_day': fc['ses_units_per_day'],
+                'rf_units_per_day': fc.get('rf_units_per_day'),
+                'hw_units_per_day': fc.get('hw_units_per_day'),
+                'difference_units': fc.get('difference_units'),
+                'difference_pct': fc.get('difference_pct'),
+                'holdout_winner': winner,
+                'ses_holdout_rmse': fc.get('ses_holdout_rmse'),
+                'rf_holdout_rmse': fc.get('rf_holdout_rmse'),
+                'hw_holdout_rmse': fc.get('hw_holdout_rmse'),
+                'holdout_days': fc.get('holdout_days', 0),
+                'rf_status': fc.get('rf_status'),
+                'hw_status': fc.get('hw_status'),
+            },
             'lead_time_days': product['lead_time_days'],
             'cost_price': product['cost_price'],
             'estimated_cost': round(suggested_quantity * product['cost_price'], 2),
@@ -1424,9 +1464,40 @@ def get_restock_recommendations():
         'total_items': len(recommendations),
         'total_estimated_cost': sum(r['estimated_cost'] for r in recommendations),
         'forecast_model': {
+            'primary_for_restock': 'simple_exponential_smoothing',
             'method': 'simple_exponential_smoothing',
             'alpha': SES_ALPHA,
             'history_days': FORECAST_HISTORY_DAYS,
+        },
+        'forecast_models': {
+            'primary_for_restock': 'simple_exponential_smoothing',
+            'ses': {
+                'method': 'simple_exponential_smoothing',
+                'alpha': SES_ALPHA,
+                'history_days': FORECAST_HISTORY_DAYS,
+            },
+            'random_forest': {
+                'method': 'random_forest',
+                'n_estimators': RF_N_ESTIMATORS,
+                'n_lags': RF_N_LAGS,
+                'holdout_days': HOLDOUT_DAYS,
+                'description': (
+                    'Lag features (7 days) + day-of-week; compared via holdout RMSE (comparison only).'
+                ),
+            },
+            'holt_winters': {
+                'method': 'holt_winters',
+                'seasonal_period': HW_SEASONAL_PERIOD,
+                'min_history_days': 28,
+                'holdout_days': HOLDOUT_DAYS,
+                'description': (
+                    'Triple exponential smoothing (additive trend + weekly seasonality); '
+                    'comparison only — restock qty still uses SES.'
+                ),
+            },
+            'winner_basis': WINNER_BASIS,
+            'forecast_status_labels': FORECAST_STATUS_LABELS,
+            'comparison_summary': comparison_summary,
         },
     })
 

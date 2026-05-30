@@ -3,6 +3,11 @@
   padding-bottom: 120px;
 }
 
+.forecast-na {
+  color: var(--text-tertiary);
+  font-size: 0.9rem;
+}
+
 .restock-filters {
   display: flex;
   justify-content: space-between;
