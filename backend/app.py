@@ -24,6 +24,7 @@ from io import BytesIO
 from reportlab.lib.pagesizes import letter
 from reportlab.pdfgen import canvas
 import csv
+import shutil
 import urllib.request
 import urllib.error
 
@@ -38,7 +39,13 @@ app.config['JWT_ACCESS_TOKEN_EXPIRES'] = timedelta(hours=8)
 CORS(app)
 jwt = JWTManager(app)
 
-DATABASE = os.path.join(_backend_dir, 'flecs.db')
+def _resolve_database_path():
+    if os.environ.get('VERCEL'):
+        return os.path.join('/tmp', 'flecs.db')
+    return os.path.join(_backend_dir, 'flecs.db')
+
+
+DATABASE = _resolve_database_path()
 
 from forecasting import (
     FORECAST_HISTORY_DAYS,
@@ -2144,24 +2151,34 @@ def health_check():
     return jsonify({'status': 'healthy', 'timestamp': datetime.now().isoformat()})
 
 
-if __name__ == '__main__':
+def bootstrap_database():
+    """Create, migrate, and seed the database. Safe to call on every startup."""
+    if os.environ.get('VERCEL'):
+        bundled = os.path.join(_backend_dir, 'flecs.db')
+        if not os.path.exists(DATABASE) and os.path.exists(bundled):
+            shutil.copy2(bundled, DATABASE)
+
     if not os.path.exists(DATABASE):
         init_db()
-        print("Database initialized successfully")
+        print('Database initialized successfully')
 
     migrate_users_role_constraint()
     ensure_products_archive_column()
     ensure_supplier_id_on_users()
     ensure_default_suppliers()
     ensure_default_accounts()
-    ensure_stock_requests_table()  # ← creates table on existing DBs
+    ensure_stock_requests_table()
     ensure_sample_products()
     ensure_sample_transactions()
 
-    print("FLECS Backend Server Starting...")
-    print("\nDefault Credentials:")
-    print("  Admin    — username: admin    | password: admin123")
-    print("  Owner    — username: owner    | password: owner123")
-    print("  Supplier — create via POST /api/auth/register (admin token required)")
-    print("\nAPI running on http://localhost:5000")
+
+if __name__ == '__main__':
+    bootstrap_database()
+
+    print('FLECS Backend Server Starting...')
+    print('\nDefault Credentials:')
+    print('  Admin    — username: admin    | password: admin123')
+    print('  Owner    — username: owner    | password: owner123')
+    print('  Supplier — create via POST /api/auth/register (admin token required)')
+    print('\nAPI running on http://localhost:5000')
     app.run(debug=True, host='0.0.0.0', port=5000)

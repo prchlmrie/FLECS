@@ -102,6 +102,67 @@ npm run build
 
 Serve `frontend/build` with a static file host. Point the client at the Flask API URL your deployment uses.
 
+## Deploy to Vercel
+
+FLECS can be deployed as a single Vercel project: the React app is served as static files and the Flask API runs as a serverless function at `/api/*`.
+
+### 1. Push to GitHub
+
+Vercel deploys from a Git repository. Push this project to GitHub (or GitLab/Bitbucket) if it is not there already.
+
+### 2. Import the project
+
+1. Go to [vercel.com/new](https://vercel.com/new) and import your FLECS repository.
+2. Leave the root directory as `.` — `vercel.json` already sets the frontend build and output paths.
+3. Add these **Environment Variables** before deploying:
+
+| Variable | Required | Description |
+|----------|----------|-------------|
+| `JWT_SECRET_KEY` | Yes | Long random string for production JWT signing |
+| `OPENROUTER_API_KEY` | No | Enables inventory AI chat |
+| `OPENROUTER_MODEL` | No | Model alias or id (default `auto`) |
+| `FLECS_SES_ALPHA` | No | Forecast smoothing factor (default `0.35`) |
+
+`REACT_APP_API_URL` is set to `/api` in `frontend/.env.production` so the client talks to the API on the same domain.
+
+### 3. Deploy
+
+Click **Deploy**. Vercel will:
+
+- Run `npm ci && npm run build` in `frontend/`
+- Install Python dependencies from `requirements.txt`
+- Route `/api/*` to the Flask app in `api/index.py`
+- Serve the React SPA for all other routes
+
+### 4. Verify
+
+After deployment, open your Vercel URL and sign in with the default accounts (change these immediately in production):
+
+| Username | Password | Role |
+|----------|----------|------|
+| `admin` | `admin123` | administrator |
+| `owner` | `owner123` | owner |
+
+Check the API with:
+
+```bash
+curl https://YOUR-PROJECT.vercel.app/api/health
+```
+
+### CLI alternative
+
+```bash
+npm i -g vercel
+vercel login
+vercel
+```
+
+Set environment variables with `vercel env add JWT_SECRET_KEY` (and others) before promoting to production.
+
+### SQLite on Vercel (important)
+
+The API uses SQLite stored in `/tmp` on Vercel. That storage is **ephemeral**: data can reset when serverless instances recycle or on redeploy. This setup is fine for demos and class projects. For a persistent production store, host the Flask backend on a platform with a real filesystem or database (e.g. Railway, Render, Fly.io) and deploy only the React frontend to Vercel, setting `REACT_APP_API_URL` to your backend URL.
+
 ## Architecture flowchart
 
 End-to-end request flow: authentication, role routing, store/supplier operations, middleware, and persistence.
